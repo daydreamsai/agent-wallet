@@ -5,8 +5,9 @@ Local signing service for AI agents. Keys never leave the daemon, policy gates e
 **Status**
 - Key generation for EVM + Solana (no import)
 - Policy file with strict schema and CLI helpers
-- Daemon with `get_address`, `sign_evm_tx`, `sign_sol_tx`
+- Daemon with `get_address`, `sign_evm_tx`, `sign_eip2612_permit`, `sign_sol_tx`
 - Socket and key permissions enforced
+- Limitation: Solana signing currently operates on raw message bytes and cannot enforce recipient allowlists, value limits, or chain IDs. Tracking full Solana transaction parsing and policy enforcement in [issue #2](https://github.com/daydreamsai/agent-wallet/issues/2).
 
 **Components**
 - `saw` CLI: keygen and policy management
@@ -42,17 +43,17 @@ flowchart LR
 saw install --root /opt/saw
 ```
 
-1. Generate a wallet
+2. Generate a wallet
 ```bash
 saw gen-key --chain evm --wallet main --root /opt/saw
 ```
 
-2. Validate policy
+3. Validate policy
 ```bash
 saw policy validate --root /opt/saw
 ```
 
-3. Start daemon
+4. Start daemon
 ```bash
 saw-daemon --socket /run/saw.sock --root /opt/saw
 ```
@@ -116,10 +117,49 @@ Response:
 }
 ```
 
-Sign Solana tx (message bytes):
+Sign EIP-2612 permit (EIP-712 typed data):
 ```json
 {
   "request_id":"3",
+  "action":"sign_eip2612_permit",
+  "wallet":"main",
+  "payload": {
+    "chain_id": 1,
+    "token": "0x1111111111111111111111111111111111111111",
+    "name": "USD Coin",
+    "version": "2",
+    "spender": "0x2222222222222222222222222222222222222222",
+    "value": "1000000",
+    "nonce": "0",
+    "deadline": "9999999999",
+    "owner": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+}
+```
+Response:
+```json
+{
+  "request_id":"3",
+  "status":"approved",
+  "result": {
+    "signature":"0x..."
+  }
+}
+```
+Notes:
+- If `allowlist_addresses` is set, both `token` and `spender` must be in the allowlist.
+- If `owner` is provided, it must match the wallet address.
+
+Sign Solana tx (message bytes):
+**Warning:** The daemon signs raw message bytes only (not full Solana transaction structures). Because of this, it cannot enforce policy checks like recipient allowlists, value limits, or chain IDs for Solana yet.
+
+**Recommended mitigation (until full parsing):**
+- Only send pre-validated messages from a trusted component.
+- Use a dedicated Solana wallet with low balances and restrictive operational controls.
+
+```json
+{
+  "request_id":"4",
   "action":"sign_sol_tx",
   "wallet":"treasury",
   "payload": {
@@ -130,7 +170,7 @@ Sign Solana tx (message bytes):
 Response:
 ```json
 {
-  "request_id":"3",
+  "request_id":"4",
   "status":"approved",
   "result": {
     "signature":"...",
@@ -143,7 +183,10 @@ Response:
 **Permissions**
 - `keys/` and `keys/<chain>/` are set to `0700`
 - key files are set to `0600`
-- socket is set to `0660`
+- socket is set to `0660` to allow group read/write so multiple authorized processes can connect. Access is controlled solely by Unix permissions; the daemon does not perform additional authentication or authorization beyond the socket file owner/group/mode.
+- **Operator guidance:** restrict the socket’s group to a dedicated minimal-permission group (create a dedicated group, `chgrp` the socket and key dirs, and avoid adding users to broad groups).
+- **Hardening options:** use filesystem ACLs (`setfacl`), enforce `chown`/`chgrp` on startup, or apply MAC controls (SELinux/AppArmor) to limit which processes can access the socket and key paths.
+- **Example workflow (single service access):** create group `saw-agent`, add only the service user to that group, `chgrp -R saw-agent /opt/saw`, ensure `audit.log` exists and is monitored, then connect to the daemon via the socket and review `audit.log` for access visibility.
 - `audit.log` is created with `0640`
 
 **Audit Logging**
@@ -156,6 +199,5 @@ Each request appends a single line to `audit.log` with:
 
 **Notes**
 - Rate limits are in-memory per daemon process.
-- Solana signing currently signs raw message bytes, not full transaction structures.
 - Requests larger than 64 KiB are rejected.
 - Daemon exits cleanly on `SIGINT` or `SIGTERM`.

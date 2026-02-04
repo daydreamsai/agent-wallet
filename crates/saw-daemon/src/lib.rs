@@ -111,6 +111,20 @@ struct SolTxPayload {
     message_base64: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct Eip2612PermitPayload {
+    chain_id: u64,
+    token: String,
+    name: String,
+    version: String,
+    spender: String,
+    value: String,
+    nonce: String,
+    deadline: String,
+    #[serde(default)]
+    owner: Option<String>,
+}
+
 struct Server {
     root: PathBuf,
     rate_state: HashMap<String, Vec<Instant>>,
@@ -147,6 +161,7 @@ impl Server {
             "get_address" => self.handle_get_address(request),
             "sign_evm_tx" => self.handle_sign_evm_tx(request),
             "sign_sol_tx" => self.handle_sign_sol_tx(request),
+            "sign_eip2612_permit" => self.handle_sign_eip2612_permit(request),
             _ => Response {
                 request_id: request.request_id,
                 status: "denied".to_string(),
@@ -374,6 +389,109 @@ impl Server {
         };
 
         match sign_sol_tx(&key_bytes, &payload.message_base64) {
+            Ok(result) => Response {
+                request_id: request.request_id,
+                status: "approved".to_string(),
+                result: Some(result),
+                error: None,
+            },
+            Err(err) => Response {
+                request_id: request.request_id,
+                status: "denied".to_string(),
+                result: None,
+                error: Some(err),
+            },
+        }
+    }
+
+    fn handle_sign_eip2612_permit(&mut self, request: Request) -> Response {
+        let payload: Eip2612PermitPayload = match serde_json::from_value(request.payload) {
+            Ok(value) => value,
+            Err(err) => {
+                return Response {
+                    request_id: request.request_id,
+                    status: "denied".to_string(),
+                    result: None,
+                    error: Some(format!("invalid payload: {err}")),
+                }
+            }
+        };
+
+        let policy = match self.load_wallet_policy(&request.wallet) {
+            Ok(policy) => policy,
+            Err(err) => {
+                return Response {
+                    request_id: request.request_id,
+                    status: "denied".to_string(),
+                    result: None,
+                    error: Some(err),
+                }
+            }
+        };
+
+        if policy.chain != Chain::Evm {
+            return Response {
+                request_id: request.request_id,
+                status: "denied".to_string(),
+                result: None,
+                error: Some("wallet chain mismatch".to_string()),
+            };
+        }
+
+        if let Some(allowed) = &policy.allowed_chains {
+            if !allowed.contains(&payload.chain_id) {
+                return Response {
+                    request_id: request.request_id,
+                    status: "denied".to_string(),
+                    result: None,
+                    error: Some("chain_id not allowed".to_string()),
+                };
+            }
+        }
+
+        if let Some(allowlist) = &policy.allowlist_addresses {
+            let token_norm = normalize_hex_address(&payload.token);
+            let spender_norm = normalize_hex_address(&payload.spender);
+            let token_allowed = allowlist
+                .iter()
+                .any(|addr| normalize_hex_address(addr) == token_norm);
+            let spender_allowed = allowlist
+                .iter()
+                .any(|addr| normalize_hex_address(addr) == spender_norm);
+            if !token_allowed || !spender_allowed {
+                return Response {
+                    request_id: request.request_id,
+                    status: "denied".to_string(),
+                    result: None,
+                    error: Some("permit address not allowed".to_string()),
+                };
+            }
+        }
+
+        if let Some(limit) = policy.rate_limit_per_minute {
+            if !self.check_rate_limit(&request.wallet, limit as usize) {
+                return Response {
+                    request_id: request.request_id,
+                    status: "denied".to_string(),
+                    result: None,
+                    error: Some("rate limit exceeded".to_string()),
+                };
+            }
+        }
+
+        let key_bytes = match read_key_bytes(&self.root, Chain::Evm, &request.wallet) {
+            Ok(value) => value,
+            Err(err) => {
+                return Response {
+                    request_id: request.request_id,
+                    status: "denied".to_string(),
+                    result: None,
+                    error: Some(err),
+                }
+            }
+        };
+
+        match sign_eip2612_permit(&key_bytes, payload) {
             Ok(result) => Response {
                 request_id: request.request_id,
                 status: "approved".to_string(),
@@ -730,6 +848,54 @@ fn sign_sol_tx(key_bytes: &[u8], message_base64: &str) -> Result<serde_json::Val
     }))
 }
 
+fn sign_eip2612_permit(
+    key_bytes: &[u8],
+    payload: Eip2612PermitPayload,
+) -> Result<serde_json::Value, String> {
+    if key_bytes.len() != 32 {
+        return Err("invalid evm key length".to_string());
+    }
+
+    let owner_bytes = evm_address_bytes(key_bytes)?;
+    let owner_hex = format!("0x{}", hex::encode(owner_bytes));
+    if let Some(owner) = payload.owner.as_deref() {
+        if normalize_hex_address(owner) != normalize_hex_address(&owner_hex) {
+            return Err("owner mismatch".to_string());
+        }
+    }
+
+    let token = parse_hex_address_fixed(&payload.token)?;
+    let spender = parse_hex_address_fixed(&payload.spender)?;
+    let value = parse_u256(&payload.value).map_err(|_| "invalid value".to_string())?;
+    let nonce = parse_u256(&payload.nonce).map_err(|_| "invalid nonce".to_string())?;
+    let deadline = parse_u256(&payload.deadline).map_err(|_| "invalid deadline".to_string())?;
+
+    let domain_separator = eip712_domain_separator(
+        &payload.name,
+        &payload.version,
+        payload.chain_id,
+        &token,
+    );
+    let struct_hash = eip2612_permit_hash(&owner_bytes, &spender, value, nonce, deadline);
+    let digest = eip712_digest(domain_separator, struct_hash);
+
+    let secp = Secp256k1::new();
+    let secret = SecretKey::from_slice(key_bytes).map_err(|_| "invalid evm key".to_string())?;
+    let message = Message::from_digest_slice(&digest).map_err(|_| "invalid digest".to_string())?;
+    let sig: RecoverableSignature = secp.sign_ecdsa_recoverable(&message, &secret);
+    let (rec_id, sig_bytes) = sig.serialize_compact();
+    let v = (rec_id.to_i32() as u8) + 27;
+
+    let mut sig_out = [0u8; 65];
+    sig_out[..64].copy_from_slice(&sig_bytes);
+    sig_out[64] = v;
+    let signature = format!("0x{}", hex::encode(sig_out));
+
+    Ok(json!({
+        "signature": signature
+    }))
+}
+
 fn parse_hex_address(value: &str) -> Result<Vec<u8>, String> {
     let normalized = value.trim_start_matches("0x");
     let bytes = hex::decode(normalized).map_err(|_| "invalid address".to_string())?;
@@ -758,6 +924,107 @@ fn parse_u256(value: &str) -> Result<U256, ()> {
 fn normalize_hex_address(value: &str) -> String {
     let trimmed = value.trim_start_matches("0x");
     format!("0x{}", trimmed.to_lowercase())
+}
+
+fn parse_hex_address_fixed(value: &str) -> Result<[u8; 20], String> {
+    let bytes = parse_hex_address(value)?;
+    let mut out = [0u8; 20];
+    out.copy_from_slice(&bytes);
+    Ok(out)
+}
+
+fn evm_address_bytes(key_bytes: &[u8]) -> Result<[u8; 20], String> {
+    if key_bytes.len() != 32 {
+        return Err("invalid evm key length".to_string());
+    }
+    let mut key = [0u8; 32];
+    key.copy_from_slice(key_bytes);
+
+    let signing_key = EvmSigningKey::from_bytes((&key).into())
+        .map_err(|_| "invalid evm private key".to_string())?;
+    let verifying_key = signing_key.verifying_key();
+    let encoded = verifying_key.to_encoded_point(false);
+    let pub_bytes = encoded.as_bytes();
+
+    let mut hasher = Keccak256::new();
+    hasher.update(&pub_bytes[1..]);
+    let hash = hasher.finalize();
+    let mut address = [0u8; 20];
+    address.copy_from_slice(&hash[12..]);
+    Ok(address)
+}
+
+fn pad_u256(value: U256) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    value.to_big_endian(&mut out);
+    out
+}
+
+fn pad_address(address: &[u8; 20]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out[12..].copy_from_slice(address);
+    out
+}
+
+fn keccak256_bytes(data: &[u8]) -> [u8; 32] {
+    let mut hasher = Keccak256::new();
+    hasher.update(data);
+    let digest = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
+}
+
+fn eip712_domain_separator(
+    name: &str,
+    version: &str,
+    chain_id: u64,
+    verifying_contract: &[u8; 20],
+) -> [u8; 32] {
+    let type_hash = keccak256_bytes(
+        b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)",
+    );
+    let name_hash = keccak256_bytes(name.as_bytes());
+    let version_hash = keccak256_bytes(version.as_bytes());
+
+    let mut encoded = Vec::with_capacity(32 * 5);
+    encoded.extend_from_slice(&type_hash);
+    encoded.extend_from_slice(&name_hash);
+    encoded.extend_from_slice(&version_hash);
+    encoded.extend_from_slice(&pad_u256(U256::from(chain_id)));
+    encoded.extend_from_slice(&pad_address(verifying_contract));
+
+    keccak256_bytes(&encoded)
+}
+
+fn eip2612_permit_hash(
+    owner: &[u8; 20],
+    spender: &[u8; 20],
+    value: U256,
+    nonce: U256,
+    deadline: U256,
+) -> [u8; 32] {
+    let type_hash = keccak256_bytes(
+        b"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)",
+    );
+
+    let mut encoded = Vec::with_capacity(32 * 6);
+    encoded.extend_from_slice(&type_hash);
+    encoded.extend_from_slice(&pad_address(owner));
+    encoded.extend_from_slice(&pad_address(spender));
+    encoded.extend_from_slice(&pad_u256(value));
+    encoded.extend_from_slice(&pad_u256(nonce));
+    encoded.extend_from_slice(&pad_u256(deadline));
+
+    keccak256_bytes(&encoded)
+}
+
+fn eip712_digest(domain_separator: [u8; 32], struct_hash: [u8; 32]) -> [u8; 32] {
+    let mut encoded = Vec::with_capacity(2 + 32 + 32);
+    encoded.extend_from_slice(b"\x19\x01");
+    encoded.extend_from_slice(&domain_separator);
+    encoded.extend_from_slice(&struct_hash);
+    keccak256_bytes(&encoded)
 }
 
 pub mod cli {
