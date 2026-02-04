@@ -1,0 +1,28 @@
+[Unit]
+Description=Secure Agent Wallet Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=saw
+Group=saw
+SupplementaryGroups=saw-agent
+ExecStart=/usr/local/bin/saw-daemon --socket /run/saw/saw.sock --root /opt/saw
+Restart=on-failure
+RestartSec=2
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX
+MemoryDenyWriteExecute=true
+LockPersonality=true
+
+# Runtime directories
+RuntimeDirectory=saw
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,18 @@
+[package]
+name = "saw"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bs58 = "0.5"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+hex = "0.4"
+k256 = { version = "0.13", features = ["ecdsa"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+sha3 = "0.10"
+
+[[bin]]
+name = "saw"
+path = "src/main.rs"
