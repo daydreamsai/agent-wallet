@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/saw-cli", "crates/saw-daemon"]
+resolver = "2"
