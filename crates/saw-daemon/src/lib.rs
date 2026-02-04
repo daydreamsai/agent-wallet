@@ -857,9 +857,10 @@ fn sign_eip2612_permit(
     }
 
     let owner_bytes = evm_address_bytes(key_bytes)?;
-    let owner_hex = format!("0x{}", hex::encode(owner_bytes));
     if let Some(owner) = payload.owner.as_deref() {
-        if normalize_hex_address(owner) != normalize_hex_address(&owner_hex) {
+        let payload_owner = parse_hex_address_fixed(owner)
+            .map_err(|_| "invalid owner address".to_string())?;
+        if payload_owner != owner_bytes {
             return Err("owner mismatch".to_string());
         }
     }

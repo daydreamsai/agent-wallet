@@ -279,3 +279,31 @@ fn sign_eip2612_permit_denies_owner_mismatch() {
 
     handle.join().expect("server join");
 }
+
+#[test]
+fn sign_eip2612_permit_denies_invalid_owner_address() {
+    let root = temp_root();
+    let socket_path = root.join("saw.sock");
+
+    gen_key(Chain::Evm, "main", &root).expect("gen key");
+
+    let policy = "wallets:\n  main:\n    chain: evm\n    allowed_chains: [1]\n";
+    write_policy(&root, policy);
+
+    let handle = start_server(root.clone(), socket_path.clone(), 1);
+
+    for _ in 0..10 {
+        if socket_path.exists() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    let request = "{\"request_id\":\"5\",\"action\":\"sign_eip2612_permit\",\"wallet\":\"main\",\"payload\":{\"chain_id\":1,\"token\":\"0x1111111111111111111111111111111111111111\",\"name\":\"USD Coin\",\"version\":\"2\",\"spender\":\"0x2222222222222222222222222222222222222222\",\"value\":\"1000000\",\"nonce\":\"0\",\"deadline\":\"9999999999\",\"owner\":\"0x1\"}}";
+
+    let response = send_request(&socket_path, request);
+    assert_eq!(response["status"], "denied");
+    assert_eq!(response["error"], "invalid owner address");
+
+    handle.join().expect("server join");
+}
