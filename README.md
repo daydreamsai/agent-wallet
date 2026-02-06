@@ -128,11 +128,15 @@ const address = await saw.getAddress();
 See [packages/saw/README.md](packages/saw/README.md) for full API docs.
 
 **CLI Commands**
-- `saw install --root <path>`
-- `saw gen-key --chain <evm|sol> --wallet <name> --root <path>`
-- `saw policy validate --root <path>`
-- `saw policy add-wallet --wallet <name> --chain <evm|sol> --root <path>`
-- `saw-daemon --socket <path> --root <path>`
+- `saw install [--root <path>]`
+- `saw gen-key --chain <evm|sol> --wallet <name> [--root <path>]`
+- `saw address --chain <evm|sol> --wallet <name> [--root <path>]`
+- `saw list [--root <path>]`
+- `saw policy validate [--root <path>]`
+- `saw policy add-wallet --wallet <name> --chain <evm|sol> [--root <path>]`
+- `saw-daemon [--socket <path>] [--root <path>]`
+
+All commands support `--help` for usage details.
 
 **Policy Schema (strict)** <a id="policy-schema-strict"></a>
 ```yaml

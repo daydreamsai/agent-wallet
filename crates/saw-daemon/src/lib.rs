@@ -615,11 +615,34 @@ fn serve_loop(
     limit: Option<usize>,
     stop: Option<Arc<AtomicBool>>,
 ) -> Result<(), DaemonError> {
+    if !root.exists() {
+        return Err(DaemonError::Io(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("root directory not found: {}", root.display()),
+        )));
+    }
+
+    if let Some(parent) = socket_path.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent).map_err(|e| {
+                DaemonError::Io(io::Error::new(
+                    e.kind(),
+                    format!("cannot create socket directory {}: {e}", parent.display()),
+                ))
+            })?;
+        }
+    }
+
     if socket_path.exists() {
         fs::remove_file(socket_path)?;
     }
 
-    let listener = UnixListener::bind(socket_path)?;
+    let listener = UnixListener::bind(socket_path).map_err(|e| {
+        DaemonError::Io(io::Error::new(
+            e.kind(),
+            format!("cannot bind socket {}: {e}", socket_path.display()),
+        ))
+    })?;
     listener.set_nonblocking(true)?;
     fs::set_permissions(socket_path, fs::Permissions::from_mode(0o660))?;
 
@@ -1038,11 +1061,26 @@ pub mod cli {
 
     use crate::{serve_forever, serve_forever_with_shutdown, serve_n, DaemonError};
 
+    const HELP: &str = "\
+saw-daemon - Secure Agent Wallet Daemon
+
+Usage: saw-daemon [options]
+
+Options:
+  --socket <path>  Unix socket path (default: /run/saw/saw.sock)
+  --root <path>    SAW data directory (default: /opt/saw)
+  --help, -h       Show this help message
+
+The daemon listens on a Unix domain socket and signs transactions
+on behalf of wallets according to policy.yaml rules.
+";
+
     #[derive(Debug)]
     pub enum CliError {
         MissingArg(&'static str),
         InvalidArg(String),
         Daemon(DaemonError),
+        Help,
     }
 
     impl From<DaemonError> for CliError {
@@ -1056,12 +1094,14 @@ pub mod cli {
             match self {
                 CliError::MissingArg(arg) => write!(f, "missing argument: {arg}"),
                 CliError::InvalidArg(arg) => write!(f, "invalid argument: {arg}"),
-                CliError::Daemon(err) => write!(f, "daemon failed: {err:?}"),
+                CliError::Daemon(DaemonError::Io(err)) => write!(f, "{err}"),
+                CliError::Daemon(DaemonError::Json(err)) => write!(f, "json error: {err}"),
+                CliError::Help => Ok(()),
             }
         }
     }
 
-    pub fn run<I, S>(args: I, limit: Option<usize>) -> Result<(), CliError>
+    fn parse_args<I, S>(args: I) -> Result<(PathBuf, PathBuf), CliError>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
@@ -1072,6 +1112,10 @@ pub mod cli {
 
         while let Some(arg) = iter.next() {
             match arg.as_ref() {
+                "--help" | "-h" => {
+                    eprint!("{}", HELP);
+                    return Err(CliError::Help);
+                }
                 "--socket" => {
                     let value = iter
                         .next()
@@ -1091,6 +1135,18 @@ pub mod cli {
                 other => return Err(CliError::InvalidArg(format!("flag: {other}"))),
             }
         }
+
+        Ok((socket, root))
+    }
+
+    pub fn run<I, S>(args: I, limit: Option<usize>) -> Result<(), CliError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let (socket, root) = parse_args(args)?;
+
+        eprintln!("saw-daemon listening on {} root={}", socket.display(), root.display());
 
         match limit {
             Some(count) => serve_n(&socket, &root, count)?,
@@ -1108,31 +1164,9 @@ pub mod cli {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let mut iter = args.into_iter();
-        let mut socket: PathBuf = PathBuf::from("/run/saw/saw.sock");
-        let mut root: PathBuf = PathBuf::from("/opt/saw");
+        let (socket, root) = parse_args(args)?;
 
-        while let Some(arg) = iter.next() {
-            match arg.as_ref() {
-                "--socket" => {
-                    let value = iter
-                        .next()
-                        .ok_or(CliError::MissingArg("--socket"))?
-                        .as_ref()
-                        .to_string();
-                    socket = PathBuf::from(value);
-                }
-                "--root" => {
-                    let value = iter
-                        .next()
-                        .ok_or(CliError::MissingArg("--root"))?
-                        .as_ref()
-                        .to_string();
-                    root = PathBuf::from(value);
-                }
-                other => return Err(CliError::InvalidArg(format!("flag: {other}"))),
-            }
-        }
+        eprintln!("saw-daemon listening on {} root={}", socket.display(), root.display());
 
         serve_forever_with_shutdown(&socket, &root, stop)?;
         Ok(())

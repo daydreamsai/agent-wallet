@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -66,6 +67,16 @@ pub enum GenKeyError {
     Policy(PolicyError),
 }
 
+impl fmt::Display for GenKeyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GenKeyError::Io(err) => write!(f, "{err}"),
+            GenKeyError::AlreadyExists => write!(f, "wallet already exists"),
+            GenKeyError::Policy(err) => write!(f, "{err}"),
+        }
+    }
+}
+
 impl From<io::Error> for GenKeyError {
     fn from(value: io::Error) -> Self {
         Self::Io(value)
@@ -86,9 +97,51 @@ pub enum PolicyError {
     WalletExists,
 }
 
+impl fmt::Display for PolicyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PolicyError::Io(err) => write!(f, "{err}"),
+            PolicyError::Parse(err) => write!(f, "invalid policy yaml: {err}"),
+            PolicyError::InvalidPolicy => write!(f, "policy file is empty or invalid"),
+            PolicyError::WalletExists => write!(f, "wallet already exists in policy"),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum AddressError {
+    Io(io::Error),
+    NotFound,
+    InvalidKey(String),
+}
+
+impl fmt::Display for AddressError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AddressError::Io(err) => write!(f, "{err}"),
+            AddressError::NotFound => write!(f, "key file not found"),
+            AddressError::InvalidKey(msg) => write!(f, "invalid key: {msg}"),
+        }
+    }
+}
+
+impl From<io::Error> for AddressError {
+    fn from(value: io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
 #[derive(Debug)]
 pub enum InstallError {
     Io(io::Error),
+}
+
+impl fmt::Display for InstallError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            InstallError::Io(err) => write!(f, "{err}"),
+        }
+    }
 }
 
 impl From<io::Error> for InstallError {
@@ -250,14 +303,113 @@ fn set_mode(path: &Path, mode: u32) -> Result<(), GenKeyError> {
     Ok(())
 }
 
+pub fn get_address(chain: Chain, wallet: &str, root: &Path) -> Result<GenKeyResult, AddressError> {
+    let dir_name = match chain {
+        Chain::Evm => "evm",
+        Chain::Sol => "sol",
+    };
+    let key_path = root.join("keys").join(dir_name).join(format!("{}.key", wallet));
+    if !key_path.exists() {
+        return Err(AddressError::NotFound);
+    }
+    let key_bytes = fs::read(&key_path)?;
+    match chain {
+        Chain::Evm => derive_evm_address(&key_bytes),
+        Chain::Sol => derive_sol_address(&key_bytes),
+    }
+}
+
+fn derive_evm_address(key_bytes: &[u8]) -> Result<GenKeyResult, AddressError> {
+    if key_bytes.len() != 32 {
+        return Err(AddressError::InvalidKey("expected 32 bytes for evm key".to_string()));
+    }
+    let signing_key = EvmSigningKey::from_bytes(key_bytes.into())
+        .map_err(|_| AddressError::InvalidKey("invalid evm private key".to_string()))?;
+    let verifying_key = signing_key.verifying_key();
+    let encoded = verifying_key.to_encoded_point(false);
+    let pub_bytes = encoded.as_bytes();
+
+    let mut hasher = Keccak256::new();
+    hasher.update(&pub_bytes[1..]);
+    let hash = hasher.finalize();
+    let address = format!("0x{}", hex::encode(&hash[12..]));
+    let public_key = format!("0x{}", hex::encode(pub_bytes));
+
+    Ok(GenKeyResult { address, public_key })
+}
+
+fn derive_sol_address(key_bytes: &[u8]) -> Result<GenKeyResult, AddressError> {
+    if key_bytes.len() != 64 {
+        return Err(AddressError::InvalidKey("expected 64 bytes for sol key".to_string()));
+    }
+    let public = &key_bytes[32..];
+    let address = bs58::encode(public).into_string();
+    let public_key = bs58::encode(public).into_string();
+
+    Ok(GenKeyResult { address, public_key })
+}
+
+pub struct WalletInfo {
+    pub name: String,
+    pub chain: Chain,
+    pub address: Result<String, AddressError>,
+}
+
+pub fn list_wallets(root: &Path) -> Result<Vec<WalletInfo>, PolicyError> {
+    let policy_path = root.join("policy.yaml");
+    let policy = read_policy(&policy_path)?;
+
+    let mut wallets = Vec::new();
+    for (name, wp) in &policy.wallets {
+        let address = match get_address(wp.chain, name, root) {
+            Ok(result) => Ok(result.address),
+            Err(err) => Err(err),
+        };
+        wallets.push(WalletInfo {
+            name: name.clone(),
+            chain: wp.chain,
+            address,
+        });
+    }
+    Ok(wallets)
+}
+
 pub mod cli {
     use std::fmt;
     use std::path::PathBuf;
 
     use crate::{
-        add_wallet_stub, gen_key, install_layout, validate_policy, Chain, GenKeyError, InstallError,
-        PolicyError,
+        add_wallet_stub, gen_key, get_address, install_layout, list_wallets, validate_policy,
+        AddressError, Chain, GenKeyError, InstallError, PolicyError,
     };
+
+    const HELP: &str = "\
+saw - Secure Agent Wallet CLI
+
+Usage: saw <command> [options]
+
+Commands:
+  install       Create the SAW directory layout
+  gen-key       Generate a new wallet key pair
+  address       Show the address for an existing wallet
+  list          List all wallets and their addresses
+  policy        Policy management subcommands
+
+Policy subcommands:
+  policy validate      Validate policy.yaml
+  policy add-wallet    Add a wallet stub to policy.yaml
+
+Common options:
+  --root <path>    SAW data directory (default: /opt/saw)
+  --help, -h       Show this help message
+
+Examples:
+  saw install --root /opt/saw
+  saw gen-key --chain evm --wallet main
+  saw address --chain evm --wallet main
+  saw list
+  saw policy validate
+";
 
     #[derive(Debug)]
     pub enum CliError {
@@ -265,6 +417,7 @@ pub mod cli {
         InvalidArg(String),
         GenKey(GenKeyError),
         Policy(PolicyError),
+        Address(AddressError),
         Install(InstallError),
     }
 
@@ -280,6 +433,12 @@ pub mod cli {
         }
     }
 
+    impl From<AddressError> for CliError {
+        fn from(value: AddressError) -> Self {
+            Self::Address(value)
+        }
+    }
+
     impl From<InstallError> for CliError {
         fn from(value: InstallError) -> Self {
             Self::Install(value)
@@ -291,9 +450,10 @@ pub mod cli {
             match self {
                 CliError::MissingArg(arg) => write!(f, "missing argument: {arg}"),
                 CliError::InvalidArg(arg) => write!(f, "invalid argument: {arg}"),
-                CliError::GenKey(err) => write!(f, "gen-key failed: {err:?}"),
-                CliError::Policy(err) => write!(f, "policy failed: {err:?}"),
-                CliError::Install(err) => write!(f, "install failed: {err:?}"),
+                CliError::GenKey(err) => write!(f, "gen-key: {err}"),
+                CliError::Policy(err) => write!(f, "policy: {err}"),
+                CliError::Address(err) => write!(f, "address: {err}"),
+                CliError::Install(err) => write!(f, "install: {err}"),
             }
         }
     }
@@ -304,14 +464,16 @@ pub mod cli {
         S: AsRef<str>,
     {
         let mut iter = args.into_iter();
-        let cmd = iter
-            .next()
-            .ok_or(CliError::MissingArg("command"))?
-            .as_ref()
-            .to_string();
+        let cmd = match iter.next() {
+            Some(arg) => arg.as_ref().to_string(),
+            None => return Ok(HELP.to_string()),
+        };
 
         match cmd.as_str() {
+            "--help" | "-h" => Ok(HELP.to_string()),
             "gen-key" => gen_key_cmd(iter),
+            "address" => address_cmd(iter),
+            "list" => list_cmd(iter),
             "policy" => policy_cmd(iter),
             "install" => install_cmd(iter),
             _ => Err(CliError::InvalidArg(format!("unknown command: {cmd}"))),
@@ -329,6 +491,9 @@ pub mod cli {
 
         while let Some(arg) = iter.next() {
             match arg.as_ref() {
+                "--help" | "-h" => {
+                    return Ok("Usage: saw gen-key --chain <evm|sol> --wallet <name> [--root <path>]\n".to_string());
+                }
                 "--chain" => {
                     let value = iter
                         .next()
@@ -363,9 +528,108 @@ pub mod cli {
         let result = gen_key(chain, &wallet, &root)?;
 
         Ok(format!(
+            "address: {}\npublic_key: {}\n\nWarning: the default policy has no constraints. \
+             Edit {}/policy.yaml to add limits before running the daemon.\n",
+            result.address, result.public_key, root.display()
+        ))
+    }
+
+    fn address_cmd<I, S>(mut iter: I) -> Result<String, CliError>
+    where
+        I: Iterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut chain: Option<Chain> = None;
+        let mut wallet: Option<String> = None;
+        let mut root: PathBuf = PathBuf::from("/opt/saw");
+
+        while let Some(arg) = iter.next() {
+            match arg.as_ref() {
+                "--help" | "-h" => {
+                    return Ok("Usage: saw address --chain <evm|sol> --wallet <name> [--root <path>]\n".to_string());
+                }
+                "--chain" => {
+                    let value = iter
+                        .next()
+                        .ok_or(CliError::MissingArg("--chain"))?
+                        .as_ref()
+                        .to_string();
+                    chain = Some(parse_chain(&value)?);
+                }
+                "--wallet" => {
+                    let value = iter
+                        .next()
+                        .ok_or(CliError::MissingArg("--wallet"))?
+                        .as_ref()
+                        .to_string();
+                    wallet = Some(value);
+                }
+                "--root" => {
+                    let value = iter
+                        .next()
+                        .ok_or(CliError::MissingArg("--root"))?
+                        .as_ref()
+                        .to_string();
+                    root = PathBuf::from(value);
+                }
+                other => return Err(CliError::InvalidArg(format!("flag: {other}"))),
+            }
+        }
+
+        let chain = chain.ok_or(CliError::MissingArg("--chain"))?;
+        let wallet = wallet.ok_or(CliError::MissingArg("--wallet"))?;
+
+        let result = get_address(chain, &wallet, &root)?;
+
+        Ok(format!(
             "address: {}\npublic_key: {}\n",
             result.address, result.public_key
         ))
+    }
+
+    fn list_cmd<I, S>(mut iter: I) -> Result<String, CliError>
+    where
+        I: Iterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut root: PathBuf = PathBuf::from("/opt/saw");
+
+        while let Some(arg) = iter.next() {
+            match arg.as_ref() {
+                "--help" | "-h" => {
+                    return Ok("Usage: saw list [--root <path>]\n".to_string());
+                }
+                "--root" => {
+                    let value = iter
+                        .next()
+                        .ok_or(CliError::MissingArg("--root"))?
+                        .as_ref()
+                        .to_string();
+                    root = PathBuf::from(value);
+                }
+                other => return Err(CliError::InvalidArg(format!("flag: {other}"))),
+            }
+        }
+
+        let wallets = list_wallets(&root)?;
+
+        if wallets.is_empty() {
+            return Ok("no wallets found\n".to_string());
+        }
+
+        let mut output = String::new();
+        for w in &wallets {
+            let chain_str = match w.chain {
+                Chain::Evm => "evm",
+                Chain::Sol => "sol",
+            };
+            let addr_str = match &w.address {
+                Ok(addr) => addr.clone(),
+                Err(err) => format!("<{err}>"),
+            };
+            output.push_str(&format!("{:<12} {:<5} {}\n", w.name, chain_str, addr_str));
+        }
+        Ok(output)
     }
 
     fn policy_cmd<I, S>(mut iter: I) -> Result<String, CliError>
@@ -375,11 +639,12 @@ pub mod cli {
     {
         let sub = iter
             .next()
-            .ok_or(CliError::MissingArg("policy command"))?
+            .ok_or(CliError::MissingArg("policy command (validate or add-wallet)"))?
             .as_ref()
             .to_string();
 
         match sub.as_str() {
+            "--help" | "-h" => Ok("Usage: saw policy <validate|add-wallet> [options]\n".to_string()),
             "validate" => policy_validate_cmd(iter),
             "add-wallet" => policy_add_wallet_cmd(iter),
             _ => Err(CliError::InvalidArg(format!("unknown policy command: {sub}"))),
@@ -394,6 +659,9 @@ pub mod cli {
         let mut root: PathBuf = PathBuf::from("/opt/saw");
         while let Some(arg) = iter.next() {
             match arg.as_ref() {
+                "--help" | "-h" => {
+                    return Ok("Usage: saw policy validate [--root <path>]\n".to_string());
+                }
                 "--root" => {
                     let value = iter
                         .next()
@@ -422,6 +690,9 @@ pub mod cli {
 
         while let Some(arg) = iter.next() {
             match arg.as_ref() {
+                "--help" | "-h" => {
+                    return Ok("Usage: saw policy add-wallet --chain <evm|sol> --wallet <name> [--root <path>]\n".to_string());
+                }
                 "--chain" => {
                     let value = iter
                         .next()
@@ -467,6 +738,9 @@ pub mod cli {
 
         while let Some(arg) = iter.next() {
             match arg.as_ref() {
+                "--help" | "-h" => {
+                    return Ok("Usage: saw install [--root <path>]\n".to_string());
+                }
                 "--root" => {
                     let value = iter
                         .next()
@@ -487,7 +761,7 @@ pub mod cli {
         match value {
             "evm" => Ok(Chain::Evm),
             "sol" => Ok(Chain::Sol),
-            _ => Err(CliError::InvalidArg(format!("chain: {value}"))),
+            _ => Err(CliError::InvalidArg(format!("chain: {value} (expected evm or sol)"))),
         }
     }
 }
