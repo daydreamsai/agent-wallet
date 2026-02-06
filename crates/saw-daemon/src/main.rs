@@ -9,7 +9,12 @@ fn main() {
     let _ = flag::register(SIGTERM, stop.clone());
 
     if let Err(err) = saw_daemon::cli::run_with_shutdown(std::env::args().skip(1), stop) {
-        eprintln!("error: {}", err);
-        std::process::exit(2);
+        match err {
+            saw_daemon::cli::CliError::Help => {}
+            _ => {
+                eprintln!("error: {}", err);
+                std::process::exit(2);
+            }
+        }
     }
 }

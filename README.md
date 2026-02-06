@@ -13,7 +13,7 @@ Local signing service for AI agents. Keys never leave the daemon, policy gates e
 - `saw` CLI: keygen and policy management
 - `saw-daemon`: AF_UNIX server that signs on behalf of wallets
 - `policy.yaml`: signing rules per wallet
-- `/opt/saw/keys`: raw binary keys on disk
+- `~/.saw/keys`: raw binary keys on disk
 
 **Flowchart**
 ```mermaid
@@ -37,35 +37,116 @@ flowchart LR
   end
 ```
 
+**Installation**
+
+Download the latest release:
+```bash
+# Download and extract the release (replace VERSION and ARCH)
+curl -LO https://github.com/daydreamsai/agent-wallet/releases/download/vVERSION/saw-VERSION-linux-x86_64.tar.gz
+tar xzf saw-VERSION-linux-x86_64.tar.gz
+sudo cp saw saw-daemon /usr/local/bin/
+```
+
+Or build from source:
+```bash
+cargo build --release
+sudo cp target/release/saw target/release/saw-daemon /usr/local/bin/
+```
+
 **Quick Start**
 1. Install layout
 ```bash
-saw install --root /opt/saw
+saw install
 ```
 
 2. Generate a wallet
 ```bash
-saw gen-key --chain evm --wallet main --root /opt/saw
+saw gen-key --chain evm --wallet main
+```
+Save the printed address and public key, or retrieve them later with `saw address --chain evm --wallet main`.
+
+3. Edit `~/.saw/policy.yaml` to add constraints (the default stub has **no limits**):
+```bash
+nano ~/.saw/policy.yaml
+```
+See [Policy Schema](#policy-schema-strict) below for available fields.
+
+4. Validate policy
+```bash
+saw policy validate
 ```
 
-3. Validate policy
+5. Start daemon
 ```bash
-saw policy validate --root /opt/saw
+saw-daemon
 ```
 
-4. Start daemon
+**Systemd Setup (production)**
+
+For production, the included systemd unit runs the daemon as a dedicated user with `/opt/saw` as the root directory and `/run/saw/saw.sock` as the socket path.
+
+Create the required user and group:
 ```bash
-saw-daemon --socket /run/saw.sock --root /opt/saw
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin saw
+sudo groupadd --system saw-agent
+sudo usermod -aG saw-agent saw
 ```
+
+Install layout and set ownership:
+```bash
+sudo saw install --root /opt/saw
+sudo chown -R saw:saw /opt/saw
+sudo chgrp -R saw-agent /opt/saw/keys
+```
+
+Install and enable the service:
+```bash
+sudo cp systemd/saw.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now saw
+```
+
+Verify it's running:
+```bash
+sudo systemctl status saw
+```
+
+The daemon will listen on `/run/saw/saw.sock`. Add your agent's service user to the `saw-agent` group so it can connect to the socket:
+```bash
+sudo usermod -aG saw-agent <agent-user>
+```
+
+When using the systemd setup, point clients at the production socket:
+```bash
+export SAW_SOCKET=/run/saw/saw.sock
+```
+
+**Node.js Client**
+
+The [`@daydreamsai/saw`](packages/saw/) npm package provides a typed client:
+```bash
+npm install @daydreamsai/saw
+```
+```typescript
+import { createSawClient } from "@daydreamsai/saw";
+
+const saw = createSawClient();
+const address = await saw.getAddress();
+```
+See [packages/saw/README.md](packages/saw/README.md) for full API docs.
 
 **CLI Commands**
-- `saw install --root <path>`
-- `saw gen-key --chain <evm|sol> --wallet <name> --root <path>`
-- `saw policy validate --root <path>`
-- `saw policy add-wallet --wallet <name> --chain <evm|sol> --root <path>`
-- `saw-daemon --socket <path> --root <path>`
+- `saw install [--root <path>]`
+- `saw gen-key --chain <evm|sol> --wallet <name> [--root <path>]`
+- `saw address --chain <evm|sol> --wallet <name> [--root <path>]`
+- `saw list [--root <path>]`
+- `saw policy validate [--root <path>]`
+- `saw policy add-wallet --wallet <name> --chain <evm|sol> [--root <path>]`
+- `saw-daemon [--socket <path>] [--root <path>]`
 
-**Policy Schema (strict)**
+All commands support `--help` for usage details.
+
+**Policy Schema (strict)** <a id="policy-schema-strict"></a>
 ```yaml
 wallets:
   main:
