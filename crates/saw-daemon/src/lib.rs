@@ -1067,8 +1067,8 @@ saw-daemon - Secure Agent Wallet Daemon
 Usage: saw-daemon [options]
 
 Options:
-  --socket <path>  Unix socket path (default: /run/saw/saw.sock)
-  --root <path>    SAW data directory (default: /opt/saw)
+  --socket <path>  Unix socket path (default: ~/.saw/saw.sock)
+  --root <path>    SAW data directory (default: ~/.saw)
   --help, -h       Show this help message
 
 The daemon listens on a Unix domain socket and signs transactions
@@ -1101,14 +1101,23 @@ on behalf of wallets according to policy.yaml rules.
         }
     }
 
+    fn default_root() -> PathBuf {
+        if let Ok(home) = std::env::var("HOME") {
+            PathBuf::from(home).join(".saw")
+        } else {
+            PathBuf::from("/opt/saw")
+        }
+    }
+
     fn parse_args<I, S>(args: I) -> Result<(PathBuf, PathBuf), CliError>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
         let mut iter = args.into_iter();
-        let mut socket: PathBuf = PathBuf::from("/run/saw/saw.sock");
-        let mut root: PathBuf = PathBuf::from("/opt/saw");
+        let root_default = default_root();
+        let mut socket: PathBuf = root_default.join("saw.sock");
+        let mut root: PathBuf = root_default;
 
         while let Some(arg) = iter.next() {
             match arg.as_ref() {

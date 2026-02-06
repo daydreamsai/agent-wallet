@@ -34,12 +34,12 @@ console.log(sig);
 
 ## Configuration
 Defaults are zero-config. Override if needed:
-- `SAW_SOCKET` (default `/run/saw/saw.sock`)
+- `SAW_SOCKET` (default `~/.saw/saw.sock`)
 - `SAW_WALLET` (default `main`)
 
 ```ts
 const saw = createSawClient({
-  socketPath: "/run/saw/saw.sock",
+  socketPath: "~/.saw/saw.sock",
   wallet: "main",
 });
 ```

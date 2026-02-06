@@ -3,7 +3,19 @@ use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+pub fn default_root() -> PathBuf {
+    if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home).join(".saw")
+    } else {
+        PathBuf::from("/opt/saw")
+    }
+}
+
+pub fn default_socket() -> PathBuf {
+    default_root().join("saw.sock")
+}
 
 use ed25519_dalek::SigningKey as SolSigningKey;
 use k256::ecdsa::SigningKey as EvmSigningKey;
@@ -400,11 +412,11 @@ Policy subcommands:
   policy add-wallet    Add a wallet stub to policy.yaml
 
 Common options:
-  --root <path>    SAW data directory (default: /opt/saw)
+  --root <path>    SAW data directory (default: ~/.saw)
   --help, -h       Show this help message
 
 Examples:
-  saw install --root /opt/saw
+  saw install
   saw gen-key --chain evm --wallet main
   saw address --chain evm --wallet main
   saw list
@@ -487,7 +499,7 @@ Examples:
     {
         let mut chain: Option<Chain> = None;
         let mut wallet: Option<String> = None;
-        let mut root: PathBuf = PathBuf::from("/opt/saw");
+        let mut root = crate::default_root();
 
         while let Some(arg) = iter.next() {
             match arg.as_ref() {
@@ -541,7 +553,7 @@ Examples:
     {
         let mut chain: Option<Chain> = None;
         let mut wallet: Option<String> = None;
-        let mut root: PathBuf = PathBuf::from("/opt/saw");
+        let mut root = crate::default_root();
 
         while let Some(arg) = iter.next() {
             match arg.as_ref() {
@@ -592,7 +604,7 @@ Examples:
         I: Iterator<Item = S>,
         S: AsRef<str>,
     {
-        let mut root: PathBuf = PathBuf::from("/opt/saw");
+        let mut root = crate::default_root();
 
         while let Some(arg) = iter.next() {
             match arg.as_ref() {
@@ -656,7 +668,7 @@ Examples:
         I: Iterator<Item = S>,
         S: AsRef<str>,
     {
-        let mut root: PathBuf = PathBuf::from("/opt/saw");
+        let mut root = crate::default_root();
         while let Some(arg) = iter.next() {
             match arg.as_ref() {
                 "--help" | "-h" => {
@@ -684,7 +696,7 @@ Examples:
         I: Iterator<Item = S>,
         S: AsRef<str>,
     {
-        let mut root: PathBuf = PathBuf::from("/opt/saw");
+        let mut root = crate::default_root();
         let mut chain: Option<Chain> = None;
         let mut wallet: Option<String> = None;
 
@@ -734,7 +746,7 @@ Examples:
         I: Iterator<Item = S>,
         S: AsRef<str>,
     {
-        let mut root: PathBuf = PathBuf::from("/opt/saw");
+        let mut root = crate::default_root();
 
         while let Some(arg) = iter.next() {
             match arg.as_ref() {

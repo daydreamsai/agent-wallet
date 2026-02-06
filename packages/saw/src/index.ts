@@ -1,5 +1,7 @@
 import net from "node:net";
 import crypto from "node:crypto";
+import os from "node:os";
+import path from "node:path";
 
 export type SawClientOptions = {
   socketPath?: string;
@@ -92,7 +94,7 @@ async function sendRequest(socketPath: string, request: SawRequest): Promise<Saw
 }
 
 export function createSawClient(options: SawClientOptions = {}) {
-  const socketPath = options.socketPath ?? process.env.SAW_SOCKET ?? "/run/saw/saw.sock";
+  const socketPath = options.socketPath ?? process.env.SAW_SOCKET ?? path.join(os.homedir(), ".saw", "saw.sock");
   const wallet = options.wallet ?? process.env.SAW_WALLET ?? "main";
   let cachedAddress: string | null = null;
 
