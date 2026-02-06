@@ -19,6 +19,7 @@ PrivateTmp=true
 RestrictAddressFamilies=AF_UNIX
 MemoryDenyWriteExecute=true
 LockPersonality=true
+ReadWritePaths=/opt/saw
 
 # Runtime directories
 RuntimeDirectory=saw

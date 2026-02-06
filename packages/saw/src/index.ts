@@ -92,7 +92,7 @@ async function sendRequest(socketPath: string, request: SawRequest): Promise<Saw
 }
 
 export function createSawClient(options: SawClientOptions = {}) {
-  const socketPath = options.socketPath ?? process.env.SAW_SOCKET ?? "/run/saw.sock";
+  const socketPath = options.socketPath ?? process.env.SAW_SOCKET ?? "/run/saw/saw.sock";
   const wallet = options.wallet ?? process.env.SAW_WALLET ?? "main";
   let cachedAddress: string | null = null;
 

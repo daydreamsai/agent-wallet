@@ -37,26 +37,95 @@ flowchart LR
   end
 ```
 
+**Installation**
+
+Download the latest release:
+```bash
+# Download and extract the release (replace VERSION and ARCH)
+curl -LO https://github.com/daydreamsai/agent-wallet/releases/download/vVERSION/saw-VERSION-linux-x86_64.tar.gz
+tar xzf saw-VERSION-linux-x86_64.tar.gz
+sudo cp saw saw-daemon /usr/local/bin/
+```
+
+Or build from source:
+```bash
+cargo build --release
+sudo cp target/release/saw target/release/saw-daemon /usr/local/bin/
+```
+
 **Quick Start**
 1. Install layout
 ```bash
-saw install --root /opt/saw
+sudo saw install --root /opt/saw
 ```
 
 2. Generate a wallet
 ```bash
-saw gen-key --chain evm --wallet main --root /opt/saw
+sudo saw gen-key --chain evm --wallet main --root /opt/saw
 ```
+Save the printed address and public key — there is no command to retrieve them later without the daemon running.
 
-3. Validate policy
+3. Edit `policy.yaml` to add constraints (the default stub has **no limits**):
+```bash
+sudo nano /opt/saw/policy.yaml
+```
+See [Policy Schema](#policy-schema-strict) below for available fields.
+
+4. Validate policy
 ```bash
 saw policy validate --root /opt/saw
 ```
 
-4. Start daemon
+5. Start daemon
 ```bash
-saw-daemon --socket /run/saw.sock --root /opt/saw
+saw-daemon --socket /run/saw/saw.sock --root /opt/saw
 ```
+
+**Systemd Setup (recommended for production)**
+
+Create the required user and group:
+```bash
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin saw
+sudo groupadd --system saw-agent
+sudo usermod -aG saw-agent saw
+```
+
+Set ownership on the data directory:
+```bash
+sudo chown -R saw:saw /opt/saw
+sudo chgrp -R saw-agent /opt/saw/keys
+```
+
+Install and enable the service:
+```bash
+sudo cp systemd/saw.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now saw
+```
+
+Verify it's running:
+```bash
+sudo systemctl status saw
+```
+
+The daemon will listen on `/run/saw/saw.sock`. Add your agent's service user to the `saw-agent` group so it can connect to the socket:
+```bash
+sudo usermod -aG saw-agent <agent-user>
+```
+
+**Node.js Client**
+
+The [`@daydreamsai/saw`](packages/saw/) npm package provides a typed client:
+```bash
+npm install @daydreamsai/saw
+```
+```typescript
+import { createSawClient } from "@daydreamsai/saw";
+
+const saw = createSawClient();
+const address = await saw.getAddress();
+```
+See [packages/saw/README.md](packages/saw/README.md) for full API docs.
 
 **CLI Commands**
 - `saw install --root <path>`
@@ -65,7 +134,7 @@ saw-daemon --socket /run/saw.sock --root /opt/saw
 - `saw policy add-wallet --wallet <name> --chain <evm|sol> --root <path>`
 - `saw-daemon --socket <path> --root <path>`
 
-**Policy Schema (strict)**
+**Policy Schema (strict)** <a id="policy-schema-strict"></a>
 ```yaml
 wallets:
   main:

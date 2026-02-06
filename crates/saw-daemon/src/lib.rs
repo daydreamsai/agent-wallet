@@ -1067,7 +1067,7 @@ pub mod cli {
         S: AsRef<str>,
     {
         let mut iter = args.into_iter();
-        let mut socket: PathBuf = PathBuf::from("/run/saw.sock");
+        let mut socket: PathBuf = PathBuf::from("/run/saw/saw.sock");
         let mut root: PathBuf = PathBuf::from("/opt/saw");
 
         while let Some(arg) = iter.next() {
@@ -1109,7 +1109,7 @@ pub mod cli {
         S: AsRef<str>,
     {
         let mut iter = args.into_iter();
-        let mut socket: PathBuf = PathBuf::from("/run/saw.sock");
+        let mut socket: PathBuf = PathBuf::from("/run/saw/saw.sock");
         let mut root: PathBuf = PathBuf::from("/opt/saw");
 
         while let Some(arg) = iter.next() {

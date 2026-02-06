@@ -2,6 +2,8 @@
 
 Node.js client for Secure Agent Wallet (SAW). Simple Unix socket API to sign EVM/Solana payloads without exposing private keys.
 
+**Prerequisite:** The SAW daemon (`saw-daemon`) must be installed and running. See the [main README](../../README.md) for setup instructions.
+
 ## Install
 ```bash
 npm install @daydreamsai/saw
@@ -32,12 +34,12 @@ console.log(sig);
 
 ## Configuration
 Defaults are zero-config. Override if needed:
-- `SAW_SOCKET` (default `/run/saw.sock`)
+- `SAW_SOCKET` (default `/run/saw/saw.sock`)
 - `SAW_WALLET` (default `main`)
 
 ```ts
 const saw = createSawClient({
-  socketPath: "/run/saw.sock",
+  socketPath: "/run/saw/saw.sock",
   wallet: "main",
 });
 ```
