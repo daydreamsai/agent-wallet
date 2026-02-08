@@ -2,11 +2,38 @@
   "name": "@daydreamsai/saw",
   "version": "0.1.0",
   "type": "module",
-  "description": "Node.js client for Secure Agent Wallet (SAW)",
+  "description": "Node.js client for Secure Agent Wallet (SAW) — sign EVM/Solana payloads without exposing private keys",
   "license": "MIT",
+  "author": "Daydreams AI",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/daydreamsai/agent-wallet.git",
+    "directory": "packages/saw"
+  },
+  "homepage": "https://github.com/daydreamsai/agent-wallet/tree/master/packages/saw#readme",
+  "bugs": {
+    "url": "https://github.com/daydreamsai/agent-wallet/issues"
+  },
+  "keywords": [
+    "wallet",
+    "agent",
+    "evm",
+    "solana",
+    "signing",
+    "eip2612",
+    "permit",
+    "crypto"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "exports": {
     ".": {
@@ -16,6 +43,7 @@
   },
   "scripts": {
     "build": "tsup",
+    "prepublishOnly": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest"
   },
