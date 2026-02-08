@@ -39,12 +39,16 @@ flowchart LR
 
 **Installation**
 
-Download the latest release:
+One-liner (recommended):
 ```bash
-# Download and extract the release (replace VERSION and ARCH)
-curl -LO https://github.com/daydreamsai/agent-wallet/releases/download/vVERSION/saw-VERSION-linux-x86_64.tar.gz
-tar xzf saw-VERSION-linux-x86_64.tar.gz
-sudo cp saw saw-daemon /usr/local/bin/
+curl -sSL https://raw.githubusercontent.com/daydreamsai/agent-wallet/master/install.sh | sh
+```
+
+This detects your OS/arch, downloads the latest release, and sets up `~/.saw/`.
+
+Or install a specific version:
+```bash
+SAW_VERSION=0.1.0 curl -sSL https://raw.githubusercontent.com/daydreamsai/agent-wallet/master/install.sh | sh
 ```
 
 Or build from source:
