@@ -1,7 +1,7 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -26,7 +26,7 @@ fn read_response(mut stream: UnixStream) -> serde_json::Value {
     serde_json::from_str(&buf).expect("valid json response")
 }
 
-fn write_policy(root: &PathBuf, policy: &str) {
+fn write_policy(root: &Path, policy: &str) {
     fs::write(root.join("policy.yaml"), policy).expect("write policy");
 }
 

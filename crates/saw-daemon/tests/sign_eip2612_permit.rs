@@ -1,7 +1,8 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -11,12 +12,14 @@ use secp256k1::{ecdsa::RecoverableSignature, Message, Secp256k1};
 use sha3::{Digest, Keccak256};
 
 fn temp_root() -> PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time went backwards")
         .as_nanos();
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut path = std::env::temp_dir();
-    path.push(format!("saw-test-{}", nanos));
+    path.push(format!("saw-test-{}-{}-{}", std::process::id(), nanos, counter));
     fs::create_dir_all(&path).expect("create temp root");
     path
 }
@@ -27,7 +30,7 @@ fn read_response(mut stream: UnixStream) -> serde_json::Value {
     serde_json::from_str(&buf).expect("valid json response")
 }
 
-fn write_policy(root: &PathBuf, policy: &str) {
+fn write_policy(root: &Path, policy: &str) {
     fs::write(root.join("policy.yaml"), policy).expect("write policy");
 }
 

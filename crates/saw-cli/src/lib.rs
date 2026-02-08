@@ -77,6 +77,7 @@ pub enum GenKeyError {
     Io(io::Error),
     AlreadyExists,
     Policy(PolicyError),
+    InvalidWalletName,
 }
 
 impl fmt::Display for GenKeyError {
@@ -85,6 +86,7 @@ impl fmt::Display for GenKeyError {
             GenKeyError::Io(err) => write!(f, "{err}"),
             GenKeyError::AlreadyExists => write!(f, "wallet already exists"),
             GenKeyError::Policy(err) => write!(f, "{err}"),
+            GenKeyError::InvalidWalletName => write!(f, "invalid wallet name"),
         }
     }
 }
@@ -107,6 +109,7 @@ pub enum PolicyError {
     Parse(serde_yaml::Error),
     InvalidPolicy,
     WalletExists,
+    InvalidWalletName,
 }
 
 impl fmt::Display for PolicyError {
@@ -116,6 +119,7 @@ impl fmt::Display for PolicyError {
             PolicyError::Parse(err) => write!(f, "invalid policy yaml: {err}"),
             PolicyError::InvalidPolicy => write!(f, "policy file is empty or invalid"),
             PolicyError::WalletExists => write!(f, "wallet already exists in policy"),
+            PolicyError::InvalidWalletName => write!(f, "invalid wallet name"),
         }
     }
 }
@@ -125,6 +129,7 @@ pub enum AddressError {
     Io(io::Error),
     NotFound,
     InvalidKey(String),
+    InvalidWalletName,
 }
 
 impl fmt::Display for AddressError {
@@ -133,6 +138,7 @@ impl fmt::Display for AddressError {
             AddressError::Io(err) => write!(f, "{err}"),
             AddressError::NotFound => write!(f, "key file not found"),
             AddressError::InvalidKey(msg) => write!(f, "invalid key: {msg}"),
+            AddressError::InvalidWalletName => write!(f, "invalid wallet name"),
         }
     }
 }
@@ -175,6 +181,8 @@ impl From<serde_yaml::Error> for PolicyError {
 }
 
 pub fn gen_key(chain: Chain, wallet: &str, root: &Path) -> Result<GenKeyResult, GenKeyError> {
+    validate_wallet_name(wallet).map_err(|_| GenKeyError::InvalidWalletName)?;
+
     let (dir_name, key_bytes, chain_value, result) = match chain {
         Chain::Evm => {
             let (key, result) = gen_evm()?;
@@ -258,6 +266,7 @@ pub fn add_wallet_stub(
     wallet: &str,
     chain: Chain,
 ) -> Result<(), PolicyError> {
+    validate_wallet_name(wallet).map_err(|_| PolicyError::InvalidWalletName)?;
     let mut policy = read_policy_or_default(policy_path)?;
     if policy.wallets.contains_key(wallet) {
         return Err(PolicyError::WalletExists);
@@ -270,6 +279,7 @@ pub fn add_wallet_stub(
 }
 
 fn upsert_policy(policy_path: &Path, wallet: &str, chain: Chain) -> Result<(), PolicyError> {
+    validate_wallet_name(wallet).map_err(|_| PolicyError::InvalidWalletName)?;
     let mut policy = read_policy_or_default(policy_path)?;
     if policy.wallets.contains_key(wallet) {
         return Err(PolicyError::WalletExists);
@@ -316,6 +326,7 @@ fn set_mode(path: &Path, mode: u32) -> Result<(), GenKeyError> {
 }
 
 pub fn get_address(chain: Chain, wallet: &str, root: &Path) -> Result<GenKeyResult, AddressError> {
+    validate_wallet_name(wallet).map_err(|_| AddressError::InvalidWalletName)?;
     let dir_name = match chain {
         Chain::Evm => "evm",
         Chain::Sol => "sol",
@@ -328,6 +339,20 @@ pub fn get_address(chain: Chain, wallet: &str, root: &Path) -> Result<GenKeyResu
     match chain {
         Chain::Evm => derive_evm_address(&key_bytes),
         Chain::Sol => derive_sol_address(&key_bytes),
+    }
+}
+
+fn validate_wallet_name(wallet: &str) -> Result<(), ()> {
+    if wallet.is_empty() || wallet.len() > 64 {
+        return Err(());
+    }
+    if wallet
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        Ok(())
+    } else {
+        Err(())
     }
 }
 
