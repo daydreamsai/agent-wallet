@@ -27,12 +27,14 @@ pub enum DaemonError {
 }
 
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
+const SOCKET_READ_TIMEOUT: Duration = Duration::from_millis(200);
 
 #[derive(Debug)]
 enum ReadError {
     Io(io::Error),
     TooLarge,
     InvalidUtf8,
+    Timeout,
 }
 
 impl From<io::Error> for DaemonError {
@@ -157,6 +159,17 @@ impl Server {
         let wallet = request.wallet.clone();
         let action = request.action.clone();
 
+        if let Err(err) = validate_wallet_name(&wallet) {
+            let response = Response {
+                request_id: request.request_id,
+                status: "denied".to_string(),
+                result: None,
+                error: Some(err),
+            };
+            let _ = self.log_event(&wallet, &action, &response.status, None);
+            return response;
+        }
+
         let mut response = match request.action.as_str() {
             "get_address" => self.handle_get_address(request),
             "sign_evm_tx" => self.handle_sign_evm_tx(request),
@@ -177,7 +190,10 @@ impl Server {
             .and_then(|value| value.as_str())
             .map(|value| value.to_string());
 
-        if let Err(_) = self.log_event(&wallet, &action, &response.status, tx_hash.as_deref()) {
+        if self
+            .log_event(&wallet, &action, &response.status, tx_hash.as_deref())
+            .is_err()
+        {
             response = Response {
                 request_id: response.request_id,
                 status: "denied".to_string(),
@@ -541,9 +557,13 @@ impl Server {
             .unwrap_or_default()
             .as_secs();
 
+        let wallet = sanitize_log_field(wallet);
+        let action = sanitize_log_field(action);
+        let status = sanitize_log_field(status);
+
         let mut line = format!("ts={} wallet={} action={} status={}", ts, wallet, action, status);
         if let Some(hash) = tx_hash {
-            line.push_str(&format!(" tx_hash={}", hash));
+            line.push_str(&format!(" tx_hash={}", sanitize_log_field(hash)));
         }
         line.push('\n');
 
@@ -556,6 +576,34 @@ impl Server {
         file.write_all(line.as_bytes())?;
         fs::set_permissions(&log_path, fs::Permissions::from_mode(0o640))?;
         Ok(())
+    }
+}
+
+fn sanitize_log_field(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ if ch.is_control() => out.push('?'),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn validate_wallet_name(wallet: &str) -> Result<(), String> {
+    if wallet.is_empty() || wallet.len() > 64 {
+        return Err("invalid wallet name".to_string());
+    }
+    if wallet
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        Ok(())
+    } else {
+        Err("invalid wallet name".to_string())
     }
 }
 
@@ -585,7 +633,16 @@ fn read_request(stream: &mut impl Read) -> Result<String, ReadError> {
     let mut too_large = false;
 
     loop {
-        let read = stream.read(&mut chunk).map_err(ReadError::Io)?;
+        let read = match stream.read(&mut chunk) {
+            Ok(value) => value,
+            Err(err)
+                if err.kind() == io::ErrorKind::WouldBlock
+                    || err.kind() == io::ErrorKind::TimedOut =>
+            {
+                return Err(ReadError::Timeout)
+            }
+            Err(err) => return Err(ReadError::Io(err)),
+        };
         if read == 0 {
             break;
         }
@@ -659,6 +716,7 @@ fn serve_loop(
         match listener.accept() {
             Ok((mut stream, _)) => {
                 stream.set_nonblocking(false)?;
+                stream.set_read_timeout(Some(SOCKET_READ_TIMEOUT))?;
                 let response = match read_request(&mut stream) {
                     Ok(raw) => server.handle_request(&raw),
                     Err(ReadError::TooLarge) => {
@@ -677,6 +735,16 @@ fn serve_loop(
                             status: "denied".to_string(),
                             result: None,
                             error: Some("invalid utf8".to_string()),
+                        };
+                        let _ = server.log_event("unknown", "unknown", &response.status, None);
+                        response
+                    }
+                    Err(ReadError::Timeout) => {
+                        let response = Response {
+                            request_id: "unknown".to_string(),
+                            status: "denied".to_string(),
+                            result: None,
+                            error: Some("request read timeout".to_string()),
                         };
                         let _ = server.log_event("unknown", "unknown", &response.status, None);
                         response
