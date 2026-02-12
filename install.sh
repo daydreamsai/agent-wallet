@@ -112,12 +112,37 @@ download_and_install() {
 # --- post-install setup ----------------------------------------------------
 
 setup() {
-  # Run saw install to create directory layout
-  if "${INSTALL_DIR}/saw" install --root "$SAW_ROOT" 2>/dev/null; then
+  # Run saw install to create directory layout.
+  # Older SAW builds can fail on macOS due to Linux-specific setup internals.
+  if "${INSTALL_DIR}/saw" install --root "$SAW_ROOT" >/dev/null 2>&1; then
     ok "Initialized data directory at ${SAW_ROOT}"
-  else
-    info "Data directory already exists at ${SAW_ROOT}"
+    return
   fi
+
+  if [ "${OS_NAME:-}" = "macos" ]; then
+    info "SAW install fallback: creating data directory layout directly for macOS"
+    mkdir -p "$SAW_ROOT" "$SAW_ROOT/keys"
+    chmod 700 "$SAW_ROOT/keys" 2>/dev/null || true
+
+    if [ ! -f "$SAW_ROOT/policy.yaml" ]; then
+      printf 'wallets:\n' > "$SAW_ROOT/policy.yaml"
+    fi
+    if [ ! -f "$SAW_ROOT/audit.log" ]; then
+      : > "$SAW_ROOT/audit.log"
+    fi
+    chmod 640 "$SAW_ROOT/policy.yaml" "$SAW_ROOT/audit.log" 2>/dev/null || true
+
+    ok "Initialized data directory at ${SAW_ROOT}"
+    return
+  fi
+
+  if [ -d "$SAW_ROOT" ]; then
+    info "Data directory already exists at ${SAW_ROOT}"
+    return
+  fi
+
+  err "Failed to initialize SAW data directory at ${SAW_ROOT}"
+  exit 1
 }
 
 # --- PATH advice -----------------------------------------------------------
@@ -184,4 +209,6 @@ main() {
   bold ""
 }
 
-main
+if [ "${SAW_INSTALL_SH_NO_RUN:-0}" != "1" ]; then
+  main
+fi
