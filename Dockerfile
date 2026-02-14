@@ -22,7 +22,14 @@ ENV SAW_ROOT=/opt/saw \
     SAW_CHAIN=evm \
     SAW_POLICY_TEMPLATE=conservative
 
-# OpenClaw configuration
+# OpenClaw Gateway configuration
+ENV OPENCLAW_GATEWAY_BIND=lan \
+    OPENCLAW_GATEWAY_PORT=18789 \
+    OPENCLAW_GATEWAY_TOKEN="" \
+    HOME=/home/node \
+    XDG_CONFIG_HOME=/home/node/.openclaw
+
+# OpenClaw build args
 ARG OPENCLAW_REF=v2026.2.9-dreamclaw.14
 ARG OPENCLAW_RELEASE_REPO=https://github.com/RedBeardEth/clawdbot
 
@@ -54,18 +61,18 @@ RUN set -eux; \
 RUN groupadd --system saw-agent \
     && useradd --system --no-create-home --shell /usr/sbin/nologin --groups saw-agent saw
 
-# Initialize SAW data directory
+# Initialize SAW data directory and OpenClaw config directory
 RUN saw install --root "$SAW_ROOT" \
-    && mkdir -p /run/saw \
+    && mkdir -p /run/saw /home/node/.openclaw/workspace \
     && chown -R saw:saw "$SAW_ROOT" /run/saw
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-EXPOSE 3000
+EXPOSE 18789
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD test -S "$SAW_SOCKET" || exit 1
 
 ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["openclaw", "onboard", "--auth-choice", "x402"]
+CMD ["openclaw", "gateway", "--bind", "lan", "--port", "18789", "--allow-unconfigured"]

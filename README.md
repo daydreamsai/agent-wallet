@@ -87,16 +87,22 @@ saw-daemon
 
 **Docker**
 
-Bundles SAW + [OpenClaw](https://github.com/RedBeardEth/clawdbot). On first start: generates wallet key, writes conservative policy (Base chain 8453, 0.01 ETH max, empty allowlist), launches SAW daemon.
+Bundles SAW + [OpenClaw](https://github.com/RedBeardEth/clawdbot) gateway. On first start: generates wallet key, writes conservative policy, launches SAW daemon, then starts the OpenClaw gateway.
 
 ```bash
-docker build -t saw .
-docker run -it --rm saw                             # build + interactive onboarding (default)
-docker run -d -v saw-data:/opt/saw --name saw saw   # daemon only (no CMD args)
-docker compose up -d                                # or use Compose (daemon mode)
+cp .env.example .env          # edit .env — set OPENCLAW_GATEWAY_TOKEN
+docker compose up -d           # build + start (gateway mode)
+docker compose logs -f         # watch startup
 ```
 
-**Important:** Always use `-v saw-data:/opt/saw` (or a bind mount) to persist wallet keys. Without a volume, keys are lost when the container is removed.
+The gateway listens on `127.0.0.1:18789` (loopback). Access from a remote host via SSH tunnel:
+```bash
+ssh -L 18789:127.0.0.1:18789 user@your-server
+```
+
+Then open `http://127.0.0.1:18789/` and paste your gateway token.
+
+**Important:** Wallet keys and OpenClaw config are persisted in Docker volumes (`saw-data`, `openclaw-data`). Without volumes, state is lost when the container is removed.
 
 View the generated wallet address:
 ```bash
@@ -108,7 +114,7 @@ Multi-arch (amd64 + arm64):
 docker buildx build --platform linux/amd64,linux/arm64 -t saw:latest .
 ```
 
-Configure via env vars: `SAW_WALLET` (default `main`), `SAW_CHAIN` (`evm`), `SAW_SOCKET` (`/run/saw/saw.sock`), `SAW_POLICY_TEMPLATE` (`conservative` or `none`).
+Configure via `.env` (see `.env.example`). Key variables: `OPENCLAW_GATEWAY_TOKEN`, `OPENCLAW_GATEWAY_PORT`, `SAW_WALLET`, `SAW_CHAIN`, `SAW_POLICY_TEMPLATE`.
 
 **Systemd Setup (production)**
 

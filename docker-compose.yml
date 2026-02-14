@@ -5,17 +5,23 @@ services:
       dockerfile: Dockerfile
     container_name: saw
     restart: unless-stopped
-    command: []  # override default onboarding CMD; runs SAW daemon only
+    env_file:
+      - .env
     environment:
       - SAW_ROOT=/opt/saw
       - SAW_SOCKET=/run/saw/saw.sock
-      - SAW_WALLET=main
-      - SAW_CHAIN=evm
-      - SAW_POLICY_TEMPLATE=conservative
+      - HOME=/home/node
+      - XDG_CONFIG_HOME=/home/node/.openclaw
+      - NODE_ENV=production
+      - TERM=xterm-256color
     volumes:
       - saw-data:/opt/saw
+      - openclaw-data:/home/node/.openclaw
     ports:
-      - "3000:3000"
+      # Loopback-only; access via SSH tunnel on remote hosts.
+      # Remove 127.0.0.1: prefix to expose publicly (set OPENCLAW_GATEWAY_TOKEN first).
+      - "127.0.0.1:${OPENCLAW_GATEWAY_PORT:-18789}:18789"
 
 volumes:
   saw-data:
+  openclaw-data:
