@@ -124,7 +124,7 @@ if [[ "${1:-}" == "openclaw" && ! -f "$OPENCLAW_CONFIG" ]]; then
         echo ""
         echo "==> SAW daemon running. Waiting for onboarding..."
         wait "$SAW_PID"
-        exit 0
+        exit $?
     fi
 fi
 
