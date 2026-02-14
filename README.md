@@ -1,344 +1,84 @@
 # Secure Agent Wallet (SAW)
 
-Local signing service for AI agents. Keys never leave the daemon, policy gates every signing request, and all access is via a Unix domain socket.
+Local signing service for AI agents. Private keys never leave the daemon process, policy rules gate every request, and all access is over a Unix domain socket.
 
-**Status**
-- Key generation for EVM + Solana (no import)
-- Policy file with strict schema and CLI helpers
-- Daemon with `get_address`, `sign_evm_tx`, `sign_eip2612_permit`, `sign_sol_tx`
-- Socket and key permissions enforced
-- Limitation: Solana signing currently operates on raw message bytes and cannot enforce recipient allowlists, value limits, or chain IDs. Tracking full Solana transaction parsing and policy enforcement in [issue #2](https://github.com/daydreamsai/agent-wallet/issues/2).
+## Get Started
 
-**Components**
-- `saw` CLI: keygen and policy management
-- `saw-daemon`: AF_UNIX server that signs on behalf of wallets
-- `policy.yaml`: signing rules per wallet
-- `~/.saw/keys`: raw binary keys on disk
+### Docker (recommended)
 
-**Flowchart**
-```mermaid
-flowchart LR
-  subgraph Setup
-    A[saw gen-key] --> B[Keys on disk]
-    A --> C[policy.yaml stub]
-    D[saw policy add-wallet] --> C
-    E[saw policy validate] --> C
-  end
+Bundles SAW + [DreamClaw](https://github.com/RedBeardEth/clawdbot) (OpenClaw fork with x402 payment routing).
 
-  subgraph Runtime
-    F[Agent Process] --> G[AF_UNIX socket]
-    G --> H[saw-daemon]
-    H --> I[Policy Check]
-    H --> J[Key Store]
-    J --> K[Signer]
-    I --> K
-    K --> L[Response]
-    L --> F
-  end
-```
-
-**Installation**
-
-**Docker (recommended)** — bundles SAW + OpenClaw gateway in a single image. SAW is built from source, OpenClaw is installed via npm. See [Docker](#docker) below.
-
-**Bare-metal (SAW + OpenClaw)** — installs prebuilt SAW binaries, OpenClaw via npm, and runs onboarding. Works on macOS and Linux:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/RedBeardEth/clawdbot/sync-openclaw-main-2026-02-11/scripts/install-openclaw-fork.sh | bash
+git clone https://github.com/daydreamsai/agent-wallet.git && cd agent-wallet
+./setup.sh
 ```
 
-**SAW only** — installs just the SAW binaries (no OpenClaw):
+Fund the wallet address printed during setup, then follow the onboarding prompts. See [docs/docker.md](docs/docker.md) for the full walkthrough.
+
+### Install binary
+
 ```bash
 curl -sSL https://raw.githubusercontent.com/daydreamsai/agent-wallet/master/install.sh | sh
 ```
 
-Or a specific version:
-```bash
-SAW_VERSION=0.1.0 curl -sSL https://raw.githubusercontent.com/daydreamsai/agent-wallet/master/install.sh | sh
-```
+### Build from source
 
-Or build from source:
 ```bash
 cargo build --release
 sudo cp target/release/saw target/release/saw-daemon /usr/local/bin/
 ```
 
-**Quick Start**
-1. Install layout
+## Quick Start
+
 ```bash
-saw install
+saw install                                    # create ~/.saw layout
+saw gen-key --chain evm --wallet main          # generate a wallet
+nano ~/.saw/policy.yaml                        # set signing constraints
+saw policy validate                            # check policy syntax
+saw-daemon                                     # start the daemon
 ```
 
-2. Generate a wallet
-```bash
-saw gen-key --chain evm --wallet main
-```
-Save the printed address and public key, or retrieve them later with `saw address --chain evm --wallet main`.
+The default policy stub has **no limits** — configure it before exposing the daemon. See [docs/policy.md](docs/policy.md) for the schema.
 
-3. Edit `~/.saw/policy.yaml` to add constraints (the default stub has **no limits**):
-```bash
-nano ~/.saw/policy.yaml
-```
-See [Policy Schema](#policy-schema-strict) below for available fields.
+## CLI Reference
 
-4. Validate policy
-```bash
-saw policy validate
-```
+| Command | Description |
+|---------|-------------|
+| `saw install` | Create the `~/.saw` directory layout |
+| `saw gen-key --chain <evm\|sol> --wallet <name>` | Generate a new keypair |
+| `saw address --chain <evm\|sol> --wallet <name>` | Print wallet address |
+| `saw list` | List all wallets |
+| `saw policy validate` | Validate `policy.yaml` |
+| `saw policy add-wallet --wallet <name> --chain <evm\|sol>` | Add a wallet stub to the policy |
+| `saw-daemon` | Start the signing daemon |
 
-5. Start daemon
-```bash
-saw-daemon
-```
+All commands support `--root <path>` and `--help`.
 
-## Docker
+## Node.js Client
 
-Bundles SAW + [DreamClaw](https://github.com/RedBeardEth/clawdbot) — RedBeard's fork of OpenClaw that includes a custom `daydreams-x402-auth` plugin for x402 payment routing. Instead of API keys, the gateway pays for AI inference per-request via x402: SAW signs EIP-2612 permits on Base, and the x402 router (`https://ai.xgate.run`) forwards requests to the upstream AI provider (Anthropic, Moonshot, etc.).
-
-*First time:*
-
-1. Run `./setup.sh`
-2. Run onboarding — confirm the auto-filled values
-3. Fund the wallet address printed during setup
-4. Configure your channel (e.g. Telegram bot token)
-5. Wait for "Onboarding complete", then press **Ctrl+C**
-6. Enter the container as the `node` user and approve pairing:
-```bash
-docker compose exec -it saw su -s /bin/bash node
-openclaw pairing approve <channel> <code>
-```
-e.g. `openclaw pairing approve telegram ABC123`
-
-*Stop (preserves wallet keys and config):*
-```bash
-docker compose down
-```
-
-*Start again:*
-```bash
-docker compose up -d
-```
-
-*Wipe everything and start fresh:*
-```bash
-docker compose down -v
-```
-
-*Helpful notes:*
-- Run `openclaw` commands as `node`, not root.
-- Wallet keys: `saw-data` volume (`/opt/saw`).
-- OpenClaw state: `openclaw-data` volume (`/home/node/.openclaw`).
-- Remote access: `ssh -L 18789:127.0.0.1:18789 user@your-server`
-
-*Remote access:*
-
-The host port is bound to `127.0.0.1:18789` (loopback only). Access from a remote host via SSH tunnel:
-```bash
-ssh -L 18789:127.0.0.1:18789 user@your-server
-```
-
-Multi-arch (amd64 + arm64):
-```bash
-docker buildx build --platform linux/amd64,linux/arm64 -t saw:latest .
-```
-
-**Systemd Setup (production)**
-
-For production, the included systemd unit runs the daemon as a dedicated user with `/opt/saw` as the root directory and `/run/saw/saw.sock` as the socket path.
-
-Create the required user and group:
-```bash
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin saw
-sudo groupadd --system saw-agent
-sudo usermod -aG saw-agent saw
-```
-
-Install layout and set ownership:
-```bash
-sudo saw install --root /opt/saw
-sudo chown -R saw:saw /opt/saw
-sudo chgrp -R saw-agent /opt/saw/keys
-```
-
-Install and enable the service:
-```bash
-sudo cp systemd/saw.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now saw
-```
-
-Verify it's running:
-```bash
-sudo systemctl status saw
-```
-
-The daemon will listen on `/run/saw/saw.sock`. Add your agent's service user to the `saw-agent` group so it can connect to the socket:
-```bash
-sudo usermod -aG saw-agent <agent-user>
-```
-
-When using the systemd setup, point clients at the production socket:
-```bash
-export SAW_SOCKET=/run/saw/saw.sock
-```
-
-**Node.js Client**
-
-The [`@daydreamsai/saw`](packages/saw/) npm package provides a typed client:
 ```bash
 npm install @daydreamsai/saw
 ```
+
 ```typescript
 import { createSawClient } from "@daydreamsai/saw";
-
 const saw = createSawClient();
 const address = await saw.getAddress();
 ```
-See [packages/saw/README.md](packages/saw/README.md) for full API docs.
 
-**CLI Commands**
-- `saw install [--root <path>]`
-- `saw gen-key --chain <evm|sol> --wallet <name> [--root <path>]`
-- `saw address --chain <evm|sol> --wallet <name> [--root <path>]`
-- `saw list [--root <path>]`
-- `saw policy validate [--root <path>]`
-- `saw policy add-wallet --wallet <name> --chain <evm|sol> [--root <path>]`
-- `saw-daemon [--socket <path>] [--root <path>]`
+Full API: [packages/saw/README.md](packages/saw/README.md)
 
-All commands support `--help` for usage details.
+## Documentation
 
-**Policy Schema (strict)** <a id="policy-schema-strict"></a>
-```yaml
-wallets:
-  main:
-    chain: evm
-    allowed_chains: [1, 8453]
-    max_tx_value_eth: 0.05
-    allow_contract_calls: false
-    allowlist_addresses:
-      - "0xabc..."
-    rate_limit_per_minute: 5
-```
-Unknown fields are rejected.
+| Topic | Description |
+|-------|-------------|
+| [Docker + OpenClaw](docs/docker.md) | Container setup, DreamClaw x402 integration, lifecycle commands |
+| [Policy](docs/policy.md) | YAML schema, field reference, Solana limitations |
+| [Socket API](docs/api.md) | JSON request/response examples for all actions |
+| [Security](docs/security.md) | File permissions, socket access, hardening options |
+| [Production](docs/production.md) | Systemd, remote access, GCP deployment |
+| [Contributing](docs/contributing.md) | Build, test, architecture, releases |
 
-**Request/Response Examples**
-All messages are JSON on a Unix socket. The daemon reads a single request and replies with a single response.
+## License
 
-Get address:
-```json
-{"request_id":"1","action":"get_address","wallet":"main"}
-```
-
-Sign EVM tx (EIP-1559):
-```json
-{
-  "request_id":"2",
-  "action":"sign_evm_tx",
-  "wallet":"main",
-  "payload": {
-    "chain_id": 1,
-    "nonce": 0,
-    "to": "0x1111111111111111111111111111111111111111",
-    "value": "0x0",
-    "gas_limit": 21000,
-    "max_fee_per_gas": "0x3b9aca00",
-    "max_priority_fee_per_gas": "0x3b9aca00",
-    "data": "0x"
-  }
-}
-```
-Response:
-```json
-{
-  "request_id":"2",
-  "status":"approved",
-  "result": {
-    "raw_tx":"0x...",
-    "tx_hash":"0x..."
-  }
-}
-```
-
-Sign EIP-2612 permit (EIP-712 typed data):
-```json
-{
-  "request_id":"3",
-  "action":"sign_eip2612_permit",
-  "wallet":"main",
-  "payload": {
-    "chain_id": 1,
-    "token": "0x1111111111111111111111111111111111111111",
-    "name": "USD Coin",
-    "version": "2",
-    "spender": "0x2222222222222222222222222222222222222222",
-    "value": "1000000",
-    "nonce": "0",
-    "deadline": "9999999999",
-    "owner": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-  }
-}
-```
-Response:
-```json
-{
-  "request_id":"3",
-  "status":"approved",
-  "result": {
-    "signature":"0x..."
-  }
-}
-```
-Notes:
-- If `allowlist_addresses` is set, both `token` and `spender` must be in the allowlist.
-- If `owner` is provided, it must match the wallet address.
-
-Sign Solana tx (message bytes):
-**Warning:** The daemon signs raw message bytes only (not full Solana transaction structures). Because of this, it cannot enforce policy checks like recipient allowlists, value limits, or chain IDs for Solana yet.
-
-**Recommended mitigation (until full parsing):**
-- Only send pre-validated messages from a trusted component.
-- Use a dedicated Solana wallet with low balances and restrictive operational controls.
-
-```json
-{
-  "request_id":"4",
-  "action":"sign_sol_tx",
-  "wallet":"treasury",
-  "payload": {
-    "message_base64":"aGVsbG8tc29sYW5h"
-  }
-}
-```
-Response:
-```json
-{
-  "request_id":"4",
-  "status":"approved",
-  "result": {
-    "signature":"...",
-    "signed_tx_base64":"..."
-  }
-}
-```
-`signed_tx_base64` is a minimal encoding: `1 || signature || message` (signature count + signature + message bytes).
-
-**Permissions**
-- `keys/` and `keys/<chain>/` are set to `0700`
-- key files are set to `0600`
-- socket is set to `0660` to allow group read/write so multiple authorized processes can connect. Access is controlled solely by Unix permissions; the daemon does not perform additional authentication or authorization beyond the socket file owner/group/mode.
-- **Operator guidance:** restrict the socket’s group to a dedicated minimal-permission group (create a dedicated group, `chgrp` the socket and key dirs, and avoid adding users to broad groups).
-- **Hardening options:** use filesystem ACLs (`setfacl`), enforce `chown`/`chgrp` on startup, or apply MAC controls (SELinux/AppArmor) to limit which processes can access the socket and key paths.
-- **Example workflow (single service access):** create group `saw-agent`, add only the service user to that group, `chgrp -R saw-agent /opt/saw`, ensure `audit.log` exists and is monitored, then connect to the daemon via the socket and review `audit.log` for access visibility.
-- `audit.log` is created with `0640`
-
-**Audit Logging**
-Each request appends a single line to `audit.log` with:
-- timestamp
-- wallet
-- action
-- status (approved/denied)
-- tx hash (when applicable)
-
-**Notes**
-- Rate limits are in-memory per daemon process.
-- Requests larger than 64 KiB are rejected.
-- Daemon exits cleanly on `SIGINT` or `SIGTERM`.
+MIT
