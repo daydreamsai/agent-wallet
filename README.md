@@ -91,9 +91,16 @@ Bundles SAW + [OpenClaw](https://github.com/RedBeardEth/clawdbot). On first star
 
 ```bash
 docker build -t saw .
-docker run -d --name saw saw                        # daemon only
-docker run -it --name saw saw openclaw onboard      # interactive onboarding
-docker compose up -d                                # or use Compose
+docker run -it --rm saw                             # build + interactive onboarding (default)
+docker run -d -v saw-data:/opt/saw --name saw saw   # daemon only (no CMD args)
+docker compose up -d                                # or use Compose (daemon mode)
+```
+
+**Important:** Always use `-v saw-data:/opt/saw` (or a bind mount) to persist wallet keys. Without a volume, keys are lost when the container is removed.
+
+View the generated wallet address:
+```bash
+docker logs saw
 ```
 
 Multi-arch (amd64 + arm64):
@@ -101,7 +108,7 @@ Multi-arch (amd64 + arm64):
 docker buildx build --platform linux/amd64,linux/arm64 -t saw:latest .
 ```
 
-Persist keys across restarts with `-v saw-data:/opt/saw`. Configure via env vars: `SAW_WALLET` (default `main`), `SAW_CHAIN` (`evm`), `SAW_SOCKET` (`/run/saw/saw.sock`), `SAW_POLICY_TEMPLATE` (`conservative` or `none`).
+Configure via env vars: `SAW_WALLET` (default `main`), `SAW_CHAIN` (`evm`), `SAW_SOCKET` (`/run/saw/saw.sock`), `SAW_POLICY_TEMPLATE` (`conservative` or `none`).
 
 **Systemd Setup (production)**
 

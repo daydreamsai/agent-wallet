@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile
     container_name: saw
     restart: unless-stopped
+    command: []  # override default onboarding CMD; runs SAW daemon only
     environment:
       - SAW_ROOT=/opt/saw
       - SAW_SOCKET=/run/saw/saw.sock
