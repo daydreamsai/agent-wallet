@@ -20,8 +20,8 @@ fi
 # ── Policy (idempotent) ───────────────────────────────────────────────────
 policy_file="${SAW_ROOT}/policy.yaml"
 if [[ "$SAW_POLICY_TEMPLATE" != "none" ]]; then
-    if [[ ! -s "$policy_file" ]] || grep -q "^wallets: {}$\|^wallets:$" "$policy_file" 2>/dev/null; then
-        # Only write default policy if file is empty or has no wallets configured.
+    if [[ ! -s "$policy_file" ]] || ! grep -q "^  [a-zA-Z0-9_-]\+:" "$policy_file" 2>/dev/null; then
+        # Only write default policy if file is empty or has no wallet entries.
         # Will not overwrite user-customized policies on restart.
         echo "==> SAW: writing conservative default policy"
         cat > "$policy_file" <<POLICY
@@ -51,6 +51,16 @@ su -s /bin/sh saw -c \
     "saw-daemon --socket '$SAW_SOCKET' --root '$SAW_ROOT'" &
 SAW_PID=$!
 
+# ── Trap for clean shutdown ───────────────────────────────────────────────
+# Registered immediately after spawning the daemon so that an early exit
+# (e.g. socket wait timeout) still cleans up the background process.
+cleanup() {
+    echo "==> Shutting down SAW daemon..."
+    kill "$SAW_PID" 2>/dev/null || true
+    wait "$SAW_PID" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
 # Wait for socket
 waited=0
 while [[ ! -S "$SAW_SOCKET" ]] && (( waited < 50 )); do
@@ -66,14 +76,6 @@ else
     echo "ERROR: SAW socket not found after 5s" >&2
     exit 1
 fi
-
-# ── Trap for clean shutdown ───────────────────────────────────────────────
-cleanup() {
-    echo "==> Shutting down SAW daemon..."
-    kill "$SAW_PID" 2>/dev/null || true
-    wait "$SAW_PID" 2>/dev/null || true
-}
-trap cleanup EXIT INT TERM
 
 # ── Run the main command ──────────────────────────────────────────────────
 if [[ $# -gt 0 ]]; then
