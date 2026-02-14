@@ -7,6 +7,24 @@ SAW_WALLET="${SAW_WALLET:-main}"
 SAW_CHAIN="${SAW_CHAIN:-evm}"
 SAW_POLICY_TEMPLATE="${SAW_POLICY_TEMPLATE:-conservative}"
 
+# ── Validate inputs ──────────────────────────────────────────────────────
+case "$SAW_CHAIN" in
+    evm|sol) ;;
+    *)
+        echo "ERROR: SAW_CHAIN must be 'evm' or 'sol', got '${SAW_CHAIN}'" >&2
+        exit 1
+        ;;
+esac
+
+# Guard against running the gateway with a placeholder or empty token.
+if [[ "${1:-}" == "openclaw" && "${OPENCLAW_GATEWAY_BIND:-loopback}" != "loopback" ]]; then
+    if [[ -z "${OPENCLAW_GATEWAY_TOKEN:-}" || "${OPENCLAW_GATEWAY_TOKEN:-}" == "change-me-now" ]]; then
+        echo "ERROR: OPENCLAW_GATEWAY_TOKEN must be set to a strong secret." >&2
+        echo "       Generate one with: openssl rand -hex 32" >&2
+        exit 1
+    fi
+fi
+
 # ── Key generation (idempotent) ───────────────────────────────────────────
 key_file="${SAW_ROOT}/keys/${SAW_CHAIN}/${SAW_WALLET}.key"
 if [[ ! -f "$key_file" ]]; then
@@ -41,8 +59,8 @@ fi
 chown -R saw:saw "$SAW_ROOT"
 find "$SAW_ROOT/keys" -type d -exec chmod 0700 {} \;
 find "$SAW_ROOT/keys" -type f -exec chmod 0600 {} \;
-chmod 0640 "$policy_file" 2>/dev/null || true
-chmod 0640 "$SAW_ROOT/audit.log" 2>/dev/null || true
+[[ -f "$policy_file" ]] && chmod 0640 "$policy_file"
+[[ -f "$SAW_ROOT/audit.log" ]] && chmod 0640 "$SAW_ROOT/audit.log"
 chown -R saw:saw /run/saw
 
 # ── Start SAW daemon in background ────────────────────────────────────────
@@ -60,6 +78,14 @@ cleanup() {
     wait "$SAW_PID" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
+
+# Verify daemon didn't crash immediately
+sleep 0.2
+if ! kill -0 "$SAW_PID" 2>/dev/null; then
+    echo "ERROR: SAW daemon exited immediately. Check logs above." >&2
+    wait "$SAW_PID" 2>/dev/null || true
+    exit 1
+fi
 
 # Wait for socket
 waited=0
@@ -81,7 +107,10 @@ fi
 if [[ $# -gt 0 ]]; then
     # Run without exec so the shell stays as PID 1 and the EXIT trap
     # keeps the SAW daemon alive for the lifetime of the foreground command.
+    # Signals go to this shell (PID 1) which triggers the trap — the
+    # foreground command is killed when the shell exits.
     "$@"
+    exit $?
 else
     # Default: keep container alive (SAW daemon serves requests)
     echo "==> SAW daemon ready. Waiting for connections on ${SAW_SOCKET}"

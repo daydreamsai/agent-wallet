@@ -55,7 +55,8 @@ RUN set -eux; \
         echo "==> Installing OpenClaw from git source"; \
         npm install -g "git+${OPENCLAW_RELEASE_REPO}.git#${OPENCLAW_REF}"; \
     fi \
-    && npm cache clean --force
+    && npm cache clean --force \
+    && openclaw --version
 
 # Create SAW system user and agent group
 RUN groupadd --system saw-agent \

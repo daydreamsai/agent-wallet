@@ -95,7 +95,7 @@ docker compose up -d           # build + start (gateway mode)
 docker compose logs -f         # watch startup
 ```
 
-The gateway listens on `127.0.0.1:18789` (loopback). Access from a remote host via SSH tunnel:
+The host port is bound to `127.0.0.1:18789` (loopback only). Access from a remote host via SSH tunnel:
 ```bash
 ssh -L 18789:127.0.0.1:18789 user@your-server
 ```
