@@ -135,7 +135,7 @@ fi
 if [[ $# -gt 0 ]]; then
     su -s /bin/bash node -c "SAW_SOCKET='$SAW_SOCKET' $(printf '%q ' "$@")" &
     CMD_PID=$!
-    wait "$CMD_PID" || true
+    wait "$CMD_PID"
     exit $?
 else
     echo "==> SAW daemon ready. Waiting for connections on ${SAW_SOCKET}"

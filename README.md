@@ -90,7 +90,7 @@ saw policy validate
 saw-daemon
 ```
 
-**Docker**
+## Docker
 
 Bundles SAW + [DreamClaw](https://github.com/RedBeardEth/clawdbot) — RedBeard's fork of OpenClaw that includes a custom `daydreams-x402-auth` plugin for x402 payment routing. Instead of API keys, the gateway pays for AI inference per-request via x402: SAW signs EIP-2612 permits on Base, and the x402 router (`https://ai.xgate.run`) forwards requests to the upstream AI provider (Anthropic, Moonshot, etc.).
 
