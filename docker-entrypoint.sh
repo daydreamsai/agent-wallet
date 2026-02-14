@@ -16,15 +16,6 @@ case "$SAW_CHAIN" in
         ;;
 esac
 
-# Guard against running the gateway with a placeholder or empty token.
-if [[ "${1:-}" == "openclaw" && "${OPENCLAW_GATEWAY_BIND:-loopback}" != "loopback" ]]; then
-    if [[ -z "${OPENCLAW_GATEWAY_TOKEN:-}" || "${OPENCLAW_GATEWAY_TOKEN:-}" == "change-me-now" ]]; then
-        echo "ERROR: OPENCLAW_GATEWAY_TOKEN must be set to a strong secret." >&2
-        echo "       Generate one with: openssl rand -hex 32" >&2
-        exit 1
-    fi
-fi
-
 # ── Key generation (idempotent) ───────────────────────────────────────────
 key_file="${SAW_ROOT}/keys/${SAW_CHAIN}/${SAW_WALLET}.key"
 if [[ ! -f "$key_file" ]]; then
@@ -39,8 +30,6 @@ fi
 policy_file="${SAW_ROOT}/policy.yaml"
 if [[ "$SAW_POLICY_TEMPLATE" != "none" ]]; then
     if [[ ! -s "$policy_file" ]] || ! grep -q "^  [a-zA-Z0-9_-]\+:" "$policy_file" 2>/dev/null; then
-        # Only write default policy if file is empty or has no wallet entries.
-        # Will not overwrite user-customized policies on restart.
         echo "==> SAW: writing conservative default policy"
         cat > "$policy_file" <<POLICY
 wallets:
@@ -55,13 +44,19 @@ POLICY
     fi
 fi
 
-# ── Fix permissions ───────────────────────────────────────────────────────
+# ── Fix SAW permissions ──────────────────────────────────────────────────
 chown -R saw:saw "$SAW_ROOT"
 find "$SAW_ROOT/keys" -type d -exec chmod 0700 {} \;
 find "$SAW_ROOT/keys" -type f -exec chmod 0600 {} \;
 [[ -f "$policy_file" ]] && chmod 0640 "$policy_file"
 [[ -f "$SAW_ROOT/audit.log" ]] && chmod 0640 "$SAW_ROOT/audit.log"
 chown -R saw:saw /run/saw
+
+# ── Fix OpenClaw permissions ─────────────────────────────────────────────
+OPENCLAW_DIR="${XDG_CONFIG_HOME:-$HOME/.openclaw}"
+if [[ -d "$OPENCLAW_DIR" ]]; then
+    chown -R node:node "$OPENCLAW_DIR"
+fi
 
 # ── Start SAW daemon in background ────────────────────────────────────────
 echo "==> SAW: starting daemon (socket=${SAW_SOCKET})"
@@ -70,8 +65,6 @@ su -s /bin/sh saw -c \
 SAW_PID=$!
 
 # ── Trap for clean shutdown ───────────────────────────────────────────────
-# Registered immediately after spawning the daemon so that an early exit
-# (e.g. socket wait timeout) still cleans up the background process.
 cleanup() {
     echo "==> Shutting down SAW daemon..."
     kill "$SAW_PID" 2>/dev/null || true
@@ -103,16 +96,48 @@ else
     exit 1
 fi
 
-# ── Run the main command ──────────────────────────────────────────────────
+# ── OpenClaw first-run detection ─────────────────────────────────────────
+OPENCLAW_CONFIG="${OPENCLAW_DIR}/openclaw.json"
+export SAW_SOCKET
+if [[ "${1:-}" == "openclaw" && ! -f "$OPENCLAW_CONFIG" ]]; then
+    if [[ "${2:-}" == "onboard" ]]; then
+        # User explicitly running onboard — let it through below
+        :
+    elif [[ -t 0 ]]; then
+        echo "==> OpenClaw: first run detected, running onboard..."
+        su -s /bin/bash node -c "SAW_SOCKET='$SAW_SOCKET' openclaw onboard --auth-choice x402"
+    else
+        echo ""
+        echo "============================================"
+        echo "  OpenClaw: first-run setup required"
+        echo "============================================"
+        echo ""
+        echo "  Run onboarding (interactive, one-time):"
+        echo ""
+        echo "    docker compose exec -it saw openclaw onboard --auth-choice x402"
+        echo ""
+        echo "  Then restart the container:"
+        echo ""
+        echo "    docker compose restart"
+        echo ""
+        echo "============================================"
+        echo ""
+        echo "==> SAW daemon running. Waiting for onboarding..."
+        wait "$SAW_PID"
+        exit 0
+    fi
+fi
+
+# ── Drop to node user and run the main command ───────────────────────────
+# Privileged setup is done. Everything below runs as the unprivileged node
+# user. The shell stays as PID 1 so the EXIT trap keeps the SAW daemon
+# alive for the lifetime of the foreground command.
 if [[ $# -gt 0 ]]; then
-    # Run without exec so the shell stays as PID 1 and the EXIT trap
-    # keeps the SAW daemon alive for the lifetime of the foreground command.
-    # Signals go to this shell (PID 1) which triggers the trap — the
-    # foreground command is killed when the shell exits.
-    "$@"
+    su -s /bin/bash node -c "SAW_SOCKET='$SAW_SOCKET' $(printf '%q ' "$@")" &
+    CMD_PID=$!
+    wait "$CMD_PID" || true
     exit $?
 else
-    # Default: keep container alive (SAW daemon serves requests)
     echo "==> SAW daemon ready. Waiting for connections on ${SAW_SOCKET}"
     wait "$SAW_PID"
 fi

@@ -39,14 +39,19 @@ flowchart LR
 
 **Installation**
 
-One-liner (recommended):
+**Docker (recommended)** — bundles SAW + OpenClaw gateway in a single image. SAW is built from source, OpenClaw is installed via npm. See [Docker](#docker) below.
+
+**Bare-metal (SAW + OpenClaw)** — installs prebuilt SAW binaries, OpenClaw via npm, and runs onboarding. Works on macOS and Linux:
+```bash
+curl -fsSL https://raw.githubusercontent.com/RedBeardEth/clawdbot/sync-openclaw-main-2026-02-11/scripts/install-openclaw-fork.sh | bash
+```
+
+**SAW only** — installs just the SAW binaries (no OpenClaw):
 ```bash
 curl -sSL https://raw.githubusercontent.com/daydreamsai/agent-wallet/master/install.sh | sh
 ```
 
-This detects your OS/arch, downloads the latest release, and sets up `~/.saw/`.
-
-Or install a specific version:
+Or a specific version:
 ```bash
 SAW_VERSION=0.1.0 curl -sSL https://raw.githubusercontent.com/daydreamsai/agent-wallet/master/install.sh | sh
 ```
@@ -87,34 +92,54 @@ saw-daemon
 
 **Docker**
 
-Bundles SAW + [OpenClaw](https://github.com/RedBeardEth/clawdbot) gateway. On first start: generates wallet key, writes conservative policy, launches SAW daemon, then starts the OpenClaw gateway.
+Bundles SAW + [DreamClaw](https://github.com/RedBeardEth/clawdbot) — RedBeard's fork of OpenClaw that includes a custom `daydreams-x402-auth` plugin for x402 payment routing. Instead of API keys, the gateway pays for AI inference per-request via x402: SAW signs EIP-2612 permits on Base, and the x402 router (`https://ai.xgate.run`) forwards requests to the upstream AI provider (Anthropic, Moonshot, etc.).
 
+*First time:*
+
+1. Run `./setup.sh`
+2. Run onboarding — confirm the auto-filled values
+3. Fund the wallet address printed during setup
+4. Configure your channel (e.g. Telegram bot token)
+5. Wait for "Onboarding complete", then press **Ctrl+C**
+6. Enter the container as the `node` user and approve pairing:
 ```bash
-cp .env.example .env          # edit .env — set OPENCLAW_GATEWAY_TOKEN
-docker compose up -d           # build + start (gateway mode)
-docker compose logs -f         # watch startup
+docker compose exec -it saw su -s /bin/bash node
+openclaw pairing approve <channel> <code>
 ```
+e.g. `openclaw pairing approve telegram ABC123`
+
+*Stop (preserves wallet keys and config):*
+```bash
+docker compose down
+```
+
+*Start again:*
+```bash
+docker compose up -d
+```
+
+*Wipe everything and start fresh:*
+```bash
+docker compose down -v
+```
+
+*Helpful notes:*
+- Run `openclaw` commands as `node`, not root.
+- Wallet keys: `saw-data` volume (`/opt/saw`).
+- OpenClaw state: `openclaw-data` volume (`/home/node/.openclaw`).
+- Remote access: `ssh -L 18789:127.0.0.1:18789 user@your-server`
+
+*Remote access:*
 
 The host port is bound to `127.0.0.1:18789` (loopback only). Access from a remote host via SSH tunnel:
 ```bash
 ssh -L 18789:127.0.0.1:18789 user@your-server
 ```
 
-Then open `http://127.0.0.1:18789/` and paste your gateway token.
-
-**Important:** Wallet keys and OpenClaw config are persisted in Docker volumes (`saw-data`, `openclaw-data`). Without volumes, state is lost when the container is removed.
-
-View the generated wallet address:
-```bash
-docker logs saw
-```
-
 Multi-arch (amd64 + arm64):
 ```bash
 docker buildx build --platform linux/amd64,linux/arm64 -t saw:latest .
 ```
-
-Configure via `.env` (see `.env.example`). Key variables: `OPENCLAW_GATEWAY_TOKEN`, `OPENCLAW_GATEWAY_PORT`, `SAW_WALLET`, `SAW_CHAIN`, `SAW_POLICY_TEMPLATE`.
 
 **Systemd Setup (production)**
 

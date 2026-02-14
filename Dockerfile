@@ -22,11 +22,8 @@ ENV SAW_ROOT=/opt/saw \
     SAW_CHAIN=evm \
     SAW_POLICY_TEMPLATE=conservative
 
-# OpenClaw Gateway configuration
-ENV OPENCLAW_GATEWAY_BIND=lan \
-    OPENCLAW_GATEWAY_PORT=18789 \
-    OPENCLAW_GATEWAY_TOKEN="" \
-    HOME=/home/node \
+# OpenClaw paths
+ENV HOME=/home/node \
     XDG_CONFIG_HOME=/home/node/.openclaw
 
 # OpenClaw build args
@@ -58,9 +55,10 @@ RUN set -eux; \
     && npm cache clean --force \
     && openclaw --version
 
-# Create SAW system user and agent group
+# Create SAW system user and agent group; add node to saw-agent for socket access
 RUN groupadd --system saw-agent \
-    && useradd --system --no-create-home --shell /usr/sbin/nologin --groups saw-agent saw
+    && useradd --system --no-create-home --shell /usr/sbin/nologin --groups saw-agent saw \
+    && usermod -aG saw-agent node
 
 # Initialize SAW data directory and OpenClaw config directory
 RUN saw install --root "$SAW_ROOT" \

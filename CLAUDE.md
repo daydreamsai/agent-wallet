@@ -28,9 +28,8 @@ cd packages/saw && npm install && npm run build
 # Run Node.js client tests (requires vitest)
 cd packages/saw && npm test
 
-# Docker (gateway mode — SAW daemon + OpenClaw gateway)
-cp .env.example .env                 # set OPENCLAW_GATEWAY_TOKEN
-docker compose up -d                 # build + start
+# Docker (SAW daemon + OpenClaw gateway)
+./setup.sh                           # build, onboard (first run), start
 docker compose logs -f               # watch startup
 ```
 
