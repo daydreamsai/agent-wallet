@@ -1,0 +1,20 @@
+services:
+  saw:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: saw
+    restart: unless-stopped
+    environment:
+      - SAW_ROOT=/opt/saw
+      - SAW_SOCKET=/run/saw/saw.sock
+      - SAW_WALLET=main
+      - SAW_CHAIN=evm
+      - SAW_POLICY_TEMPLATE=conservative
+    volumes:
+      - saw-data:/opt/saw
+    ports:
+      - "3000:3000"
+
+volumes:
+  saw-data:

@@ -85,6 +85,24 @@ saw policy validate
 saw-daemon
 ```
 
+**Docker**
+
+Bundles SAW + [OpenClaw](https://github.com/RedBeardEth/clawdbot). On first start: generates wallet key, writes conservative policy (Base chain 8453, 0.01 ETH max, empty allowlist), launches SAW daemon.
+
+```bash
+docker build -t saw .
+docker run -d --name saw saw                        # daemon only
+docker run -it --name saw saw openclaw onboard      # interactive onboarding
+docker compose up -d                                # or use Compose
+```
+
+Multi-arch (amd64 + arm64):
+```bash
+docker buildx build --platform linux/amd64,linux/arm64 -t saw:latest .
+```
+
+Persist keys across restarts with `-v saw-data:/opt/saw`. Configure via env vars: `SAW_WALLET` (default `main`), `SAW_CHAIN` (`evm`), `SAW_SOCKET` (`/run/saw/saw.sock`), `SAW_POLICY_TEMPLATE` (`conservative` or `none`).
+
 **Systemd Setup (production)**
 
 For production, the included systemd unit runs the daemon as a dedicated user with `/opt/saw` as the root directory and `/run/saw/saw.sock` as the socket path.
