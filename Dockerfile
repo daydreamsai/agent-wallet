@@ -68,3 +68,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD test -S "$SAW_SOCKET" || exit 1
 
 ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["openclaw", "onboard", "--auth-choice", "x402"]
