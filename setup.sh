@@ -76,59 +76,49 @@ OPENCLAW_CONFIG_PATH="/home/node/.openclaw/openclaw.json"
 has_config=$(docker compose exec -T saw test -f "$OPENCLAW_CONFIG_PATH" 2>/dev/null && echo "yes" || echo "no")
 
 if [[ "$has_config" == "no" ]]; then
+    echo ""
+    echo "============================================"
+    echo "  OpenClaw: first-time onboarding"
+    echo "============================================"
+    echo ""
+
     if [[ -t 0 ]]; then
-        # Interactive terminal available
-        echo ""
-        echo "============================================"
-        echo "  OpenClaw: first-time onboarding"
-        echo "============================================"
-        echo ""
+        # Interactive terminal - run interactive onboarding
         echo "  Follow the prompts to complete setup."
         echo ""
         echo "  (Press Ctrl+C when you see 'Onboarding complete')"
         echo ""
 
-        # Trap SIGINT so the script continues after the user presses Ctrl+C
-        # to escape the hanging exec process.
         trap '' INT
         docker compose exec -it saw openclaw onboard --auth-choice x402 || true
         trap - INT
-
-        # Restore terminal after interactive prompts
         stty sane 2>/dev/null || true
-
-        # Verify onboarding actually created the config
-        has_config=$(docker compose exec -T saw test -f "$OPENCLAW_CONFIG_PATH" 2>/dev/null && echo "yes" || echo "no")
-        if [[ "$has_config" == "no" ]]; then
-            echo ""
-            echo "Onboarding did not complete. Retry with:"
-            echo "  cd $SAW_DIR && docker compose exec -it saw openclaw onboard --auth-choice x402"
-            echo "  docker compose restart"
-            exit 1
-        fi
-
-        echo ""
-        echo "==> Restarting with gateway..."
-        docker compose restart
-        sleep 3
     else
-        # No TTY (curl | bash) - print instructions
+        # Non-interactive (curl | bash) - auto-onboard with defaults
+        echo "  Running auto-onboarding with x402 defaults..."
         echo ""
-        echo "============================================"
-        echo "  OpenClaw: first-run setup required"
-        echo "============================================"
-        echo ""
-        echo "  Run onboarding (interactive, one-time):"
-        echo ""
-        echo "    cd $SAW_DIR && docker compose exec -it saw openclaw onboard --auth-choice x402"
-        echo ""
-        echo "  Then restart the container:"
-        echo ""
-        echo "    docker compose restart"
-        echo ""
-        echo "============================================"
-        echo ""
+        docker compose exec -T saw openclaw onboard \
+            --non-interactive \
+            --accept-risk \
+            --auth-choice x402 \
+            --skip-channels \
+            --install-daemon
     fi
+
+    # Verify onboarding created the config
+    has_config=$(docker compose exec -T saw test -f "$OPENCLAW_CONFIG_PATH" 2>/dev/null && echo "yes" || echo "no")
+    if [[ "$has_config" == "no" ]]; then
+        echo ""
+        echo "ERROR: Onboarding did not complete. Retry with:"
+        echo "  cd $SAW_DIR && docker compose exec -it saw openclaw onboard --auth-choice x402"
+        echo "  docker compose restart"
+        exit 1
+    fi
+
+    echo ""
+    echo "==> Restarting with gateway..."
+    docker compose restart
+    sleep 3
 fi
 
 # ── Print summary ────────────────────────────────────────────────────────
