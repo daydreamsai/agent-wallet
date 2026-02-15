@@ -32,9 +32,9 @@ mkdir -p "$SAW_DIR"
 cd "$SAW_DIR"
 
 # ── Generate docker-compose.yml ──────────────────────────────────────────
-if [[ ! -f docker-compose.yml ]]; then
-    echo "==> Writing docker-compose.yml..."
-    cat > docker-compose.yml <<COMPOSE
+# Always regenerate to pick up SAW_IMAGE/SAW_PORT changes.
+echo "==> Writing docker-compose.yml (image: ${SAW_IMAGE})..."
+cat > docker-compose.yml <<COMPOSE
 services:
   saw:
     image: ${SAW_IMAGE}
@@ -57,9 +57,6 @@ volumes:
   saw-data:
   openclaw-data:
 COMPOSE
-else
-    echo "==> docker-compose.yml already exists, skipping generation"
-fi
 
 # ── Pull image ───────────────────────────────────────────────────────────
 echo ""
