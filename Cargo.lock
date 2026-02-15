@@ -1582,13 +1582,18 @@ name = "saw"
 version = "0.1.0"
 dependencies = [
  "bs58",
+ "cggmp21",
  "ed25519-dalek",
  "hex",
  "k256",
  "rand_core",
+ "saw-mpc",
  "serde",
+ "serde_json",
  "serde_yaml",
  "sha3",
+ "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]

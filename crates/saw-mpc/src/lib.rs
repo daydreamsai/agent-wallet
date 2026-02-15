@@ -12,6 +12,7 @@
 pub mod error;
 pub mod keygen;
 pub mod protocol;
+pub mod relay;
 pub mod signing;
 pub mod transport;
 pub mod types;

@@ -1,3 +1,5 @@
+mod keygen_threshold;
+
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::{self, OpenOptions};
@@ -415,6 +417,7 @@ pub mod cli {
     use std::fmt;
     use std::path::PathBuf;
 
+    use crate::keygen_threshold;
     use crate::{
         add_wallet_stub, gen_key, get_address, install_layout, list_wallets, validate_policy,
         AddressError, Chain, GenKeyError, InstallError, PolicyError,
@@ -426,11 +429,12 @@ saw - Secure Agent Wallet CLI
 Usage: saw <command> [options]
 
 Commands:
-  install       Create the SAW directory layout
-  gen-key       Generate a new wallet key pair
-  address       Show the address for an existing wallet
-  list          List all wallets and their addresses
-  policy        Policy management subcommands
+  install             Create the SAW directory layout
+  gen-key             Generate a new wallet key pair (single-key)
+  keygen-threshold    Run threshold keygen ceremony (2-of-3)
+  address             Show the address for an existing wallet
+  list                List all wallets and their addresses
+  policy              Policy management subcommands
 
 Policy subcommands:
   policy validate      Validate policy.yaml
@@ -446,6 +450,12 @@ Examples:
   saw address --chain evm --wallet main
   saw list
   saw policy validate
+
+Threshold keygen:
+  saw keygen-threshold --relay --listen 0.0.0.0:9444
+  saw keygen-threshold --party 0 --wallet main --connect ws://relay:9444
+  saw keygen-threshold --party 1 --wallet main --connect ws://relay:9444
+  saw keygen-threshold --party 2 --wallet main --connect ws://relay:9444
 ";
 
     #[derive(Debug)]
@@ -509,11 +519,108 @@ Examples:
         match cmd.as_str() {
             "--help" | "-h" => Ok(HELP.to_string()),
             "gen-key" => gen_key_cmd(iter),
+            "keygen-threshold" => keygen_threshold_cmd(iter),
             "address" => address_cmd(iter),
             "list" => list_cmd(iter),
             "policy" => policy_cmd(iter),
             "install" => install_cmd(iter),
             _ => Err(CliError::InvalidArg(format!("unknown command: {cmd}"))),
+        }
+    }
+
+    fn keygen_threshold_cmd<I, S>(mut iter: I) -> Result<String, CliError>
+    where
+        I: Iterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut relay_mode = false;
+        let mut listen: Option<String> = None;
+        let mut party_id: Option<u16> = None;
+        let mut wallet: Option<String> = None;
+        let mut connect: Option<String> = None;
+        let mut root = crate::default_root();
+
+        while let Some(arg) = iter.next() {
+            match arg.as_ref() {
+                "--help" | "-h" => {
+                    return Ok("\
+Usage:
+  saw keygen-threshold --relay --listen <addr>
+  saw keygen-threshold --party <0|1|2> --wallet <name> --connect <ws://relay>
+
+Options:
+  --relay           Run as relay server (routes messages, no key material)
+  --listen <addr>   Relay listen address (default: 0.0.0.0:9444)
+  --party <id>      Party index (0=daemon, 1=policy, 2=cosigner)
+  --wallet <name>   Wallet name
+  --connect <url>   Relay WebSocket URL
+  --root <path>     SAW data directory (default: ~/.saw)
+".to_string());
+                }
+                "--relay" => relay_mode = true,
+                "--listen" => {
+                    listen = Some(
+                        iter.next()
+                            .ok_or(CliError::MissingArg("--listen"))?
+                            .as_ref()
+                            .to_string(),
+                    );
+                }
+                "--party" => {
+                    let val = iter
+                        .next()
+                        .ok_or(CliError::MissingArg("--party"))?
+                        .as_ref()
+                        .to_string();
+                    party_id = Some(
+                        val.parse()
+                            .map_err(|_| CliError::InvalidArg(format!("--party: {val}")))?,
+                    );
+                }
+                "--wallet" => {
+                    wallet = Some(
+                        iter.next()
+                            .ok_or(CliError::MissingArg("--wallet"))?
+                            .as_ref()
+                            .to_string(),
+                    );
+                }
+                "--connect" => {
+                    connect = Some(
+                        iter.next()
+                            .ok_or(CliError::MissingArg("--connect"))?
+                            .as_ref()
+                            .to_string(),
+                    );
+                }
+                "--root" => {
+                    root = PathBuf::from(
+                        iter.next()
+                            .ok_or(CliError::MissingArg("--root"))?
+                            .as_ref()
+                            .to_string(),
+                    );
+                }
+                other => return Err(CliError::InvalidArg(format!("flag: {other}"))),
+            }
+        }
+
+        // Build a tokio runtime and run
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| CliError::InvalidArg(format!("tokio runtime: {e}")))?;
+
+        if relay_mode {
+            let addr = listen.as_deref().unwrap_or("0.0.0.0:9444");
+            rt.block_on(keygen_threshold::run_relay(addr))
+                .map_err(|e| CliError::InvalidArg(e))
+        } else {
+            let pid = party_id.ok_or(CliError::MissingArg("--party"))?;
+            let w = wallet.ok_or(CliError::MissingArg("--wallet"))?;
+            let url = connect.ok_or(CliError::MissingArg("--connect"))?;
+            rt.block_on(keygen_threshold::run_party(pid, &w, &url, &root))
+                .map_err(|e| CliError::InvalidArg(e))
         }
     }
 
