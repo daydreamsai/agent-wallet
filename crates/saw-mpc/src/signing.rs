@@ -40,8 +40,13 @@ impl EthSignature {
 }
 
 /// Pool of ready-to-use presignatures for low-latency signing.
+///
+/// Presignatures are indexed by a sequential `presig_index` so both
+/// daemon and policy can agree on which presignature to consume.
 pub struct PresignaturePool {
-    pool: Vec<cggmp21::Presignature<Secp256k1>>,
+    pool: std::collections::BTreeMap<u64, cggmp21::Presignature<Secp256k1>>,
+    /// Next index to assign when generating a new presignature
+    next_index: u64,
     target_size: usize,
     refill_threshold: usize,
 }
@@ -49,14 +54,22 @@ pub struct PresignaturePool {
 impl PresignaturePool {
     pub fn new(target_size: usize, refill_threshold: usize) -> Self {
         Self {
-            pool: Vec::with_capacity(target_size),
+            pool: std::collections::BTreeMap::new(),
+            next_index: 0,
             target_size,
             refill_threshold,
         }
     }
 
-    pub fn take(&mut self) -> Option<cggmp21::Presignature<Secp256k1>> {
-        self.pool.pop()
+    /// Take a presignature by index (for coordinated consumption).
+    pub fn take(&mut self, index: u64) -> Option<cggmp21::Presignature<Secp256k1>> {
+        self.pool.remove(&index)
+    }
+
+    /// Take the lowest-indexed presignature available.
+    pub fn take_next(&mut self) -> Option<(u64, cggmp21::Presignature<Secp256k1>)> {
+        let index = *self.pool.keys().next()?;
+        self.pool.remove(&index).map(|p| (index, p))
     }
 
     pub fn available(&self) -> usize {
@@ -71,8 +84,16 @@ impl PresignaturePool {
         self.target_size.saturating_sub(self.pool.len())
     }
 
-    pub fn add(&mut self, presig: cggmp21::Presignature<Secp256k1>) {
-        self.pool.push(presig);
+    /// Reserve the next presig_index (call before starting MPC generation).
+    pub fn reserve_index(&mut self) -> u64 {
+        let idx = self.next_index;
+        self.next_index += 1;
+        idx
+    }
+
+    /// Store a generated presignature at the given index.
+    pub fn add(&mut self, index: u64, presig: cggmp21::Presignature<Secp256k1>) {
+        self.pool.insert(index, presig);
     }
 }
 

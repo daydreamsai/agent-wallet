@@ -188,7 +188,7 @@ impl Server {
 
                 threshold_clients.insert(
                     wallet.clone(),
-                    threshold::ThresholdClient::new(key_share, policy_url),
+                    threshold::ThresholdClient::new(key_share, policy_url.clone()),
                 );
                 needs_runtime = true;
             }
@@ -204,6 +204,20 @@ impl Server {
         } else {
             None
         };
+
+        // Start background presignature refill for each threshold wallet
+        if let Some(rt) = &rt {
+            for (wallet, client) in &threshold_clients {
+                let _handle = rt.spawn({
+                    let wallet = wallet.clone();
+                    let handle = client.start_presign_refill();
+                    async move {
+                        eprintln!("presign refill started for wallet {wallet}");
+                        handle.await.ok();
+                    }
+                });
+            }
+        }
 
         Self {
             root: root.to_path_buf(),
