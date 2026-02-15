@@ -1,3 +1,9 @@
 [workspace]
-members = ["crates/saw-cli", "crates/saw-daemon"]
+members = [
+    "crates/saw-cli",
+    "crates/saw-daemon",
+    "crates/saw-mpc",
+    "crates/saw-policy",
+    "crates/saw-cosigner",
+]
 resolver = "2"
