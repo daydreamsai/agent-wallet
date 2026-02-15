@@ -1,90 +1,131 @@
-//! Key generation ceremony: all 3 parties collaborate to produce
+//! Key generation ceremony: all parties collaborate to produce
 //! key shares without any single party ever seeing the full key.
-//!
-//! Steps:
-//! 1. Generate auxiliary info (Paillier moduli, ZK proofs)
-//! 2. Run distributed key generation
-//! 3. Combine into a complete KeyShare
-//! 4. Derive Ethereum address from the combined public key
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use rand_core::OsRng;
+use sha3::{Digest, Keccak256};
+
+use cggmp21::supported_curves::Secp256k1;
+use cggmp21::{
+    key_share::AuxInfo,
+    ExecutionId, IncompleteKeyShare, PregeneratedPrimes,
+};
 
 use crate::error::MpcError;
-use crate::types::{Chain, KeyShare, ThresholdConfig};
+use crate::types::KeyShareData;
 
-/// Run the full keygen ceremony for this party.
-///
-/// This is a placeholder that documents the integration points.
-/// The actual implementation will wire cggmp21's keygen + aux_info_gen
-/// into the transport layer.
-///
-/// # Protocol Flow
-///
-/// ```text
-/// 1. All parties: aux_info_gen(eid, i, n, primes) → AuxInfo
-///    - Generates Paillier keypairs and ZK proofs
-///    - Computationally heavy (safe prime generation)
-///    - Can be reused across multiple wallets
-///
-/// 2. All parties: keygen::<Secp256k1>(eid, i, n).set_threshold(t) → IncompleteKeyShare
-///    - Generates secret share xi such that x = Σ xi
-///    - Outputs combined public key Q
-///    - Each party only knows their xi
-///
-/// 3. Each party: KeyShare::from_parts((incomplete, aux_info)) → KeyShare
-///    - Combines keygen output with aux info
-///    - Ready for signing
-/// ```
-pub async fn run_keygen(
-    config: &ThresholdConfig,
-    // TODO: transport parameter — Stream/Sink of MPC messages
-) -> Result<KeyShare, MpcError> {
-    if config.threshold < 2 {
-        return Err(MpcError::Config("threshold must be >= 2".into()));
-    }
-    if config.num_parties < config.threshold {
-        return Err(MpcError::Config(
-            "num_parties must be >= threshold".into(),
-        ));
-    }
-    if config.party_id >= config.num_parties {
-        return Err(MpcError::Config(
-            "party_id must be < num_parties".into(),
-        ));
-    }
-    if config.chain != Chain::Evm {
-        return Err(MpcError::Config(
-            "only EVM chain supported for threshold signing".into(),
-        ));
-    }
+/// Output of a successful keygen ceremony.
+pub struct KeygenOutput {
+    pub key_share: cggmp21::KeyShare<Secp256k1>,
+    pub address: String,
+    pub public_key: String,
+}
 
-    // TODO: Implement actual keygen ceremony:
-    //
-    // let primes = cggmp21::PregeneratedPrimes::generate(&mut OsRng);
-    //
-    // let eid = cggmp21::ExecutionId::new(session_id.as_bytes());
-    //
-    // let aux_info = cggmp21::aux_info_gen(eid, config.party_id, config.num_parties, primes)
-    //     .start(&mut OsRng, party)
-    //     .await
-    //     .map_err(|e| MpcError::AuxInfo(e.to_string()))?;
-    //
-    // let incomplete_key_share = cggmp21::keygen::<Secp256k1>(eid, config.party_id, config.num_parties)
-    //     .set_threshold(config.threshold)
-    //     .start(&mut OsRng, party)
-    //     .await
-    //     .map_err(|e| MpcError::Keygen(e.to_string()))?;
-    //
-    // let key_share = cggmp21::KeyShare::from_parts((incomplete_key_share, aux_info))
-    //     .map_err(|e| MpcError::Keygen(e.to_string()))?;
-    //
-    // Derive Ethereum address from key_share.shared_public_key()
+/// Generate precomputed Paillier primes (CPU-intensive).
+pub fn pregenerate_primes() -> PregeneratedPrimes {
+    tracing::info!("generating Paillier primes (this may take a while)...");
+    let primes = PregeneratedPrimes::generate(&mut OsRng);
+    tracing::info!("prime generation complete");
+    primes
+}
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+/// Run aux info generation using a `Delivery` transport.
+pub async fn generate_aux_info<D>(
+    eid: ExecutionId<'_>,
+    party_id: u16,
+    num_parties: u16,
+    primes: PregeneratedPrimes,
+    delivery: D,
+) -> Result<AuxInfo, MpcError>
+where
+    D: cggmp21::round_based::Delivery<
+        cggmp21::key_refresh::msg::aux_only::Msg<
+            sha2::Sha256,
+            cggmp21::security_level::SecurityLevel128,
+        >,
+    >,
+{
+    tracing::info!(party_id, num_parties, "starting aux info generation");
 
-    // Placeholder — will be replaced with real keygen output
-    Err(MpcError::Keygen("keygen not yet implemented — scaffolding only".into()))
+    let party = cggmp21::round_based::MpcParty::connected(delivery);
+
+    let aux_info = cggmp21::aux_info_gen(eid, party_id, num_parties, primes)
+        .start(&mut OsRng, party)
+        .await
+        .map_err(|e| MpcError::AuxInfo(format!("{e:?}")))?;
+
+    tracing::info!(party_id, "aux info generation complete");
+    Ok(aux_info)
+}
+
+/// Run distributed key generation using a `Delivery` transport.
+pub async fn generate_key<D>(
+    eid: ExecutionId<'_>,
+    party_id: u16,
+    num_parties: u16,
+    threshold: u16,
+    delivery: D,
+) -> Result<IncompleteKeyShare<Secp256k1>, MpcError>
+where
+    D: cggmp21::round_based::Delivery<
+        cggmp21::keygen::ThresholdMsg<
+            Secp256k1,
+            cggmp21::security_level::SecurityLevel128,
+            sha2::Sha256,
+        >,
+    >,
+{
+    tracing::info!(party_id, num_parties, threshold, "starting key generation");
+
+    let party = cggmp21::round_based::MpcParty::connected(delivery);
+
+    let incomplete = cggmp21::keygen::<Secp256k1>(eid, party_id, num_parties)
+        .set_threshold(threshold)
+        .start(&mut OsRng, party)
+        .await
+        .map_err(|e| MpcError::Keygen(format!("{e:?}")))?;
+
+    tracing::info!(party_id, "key generation complete");
+    Ok(incomplete)
+}
+
+/// Combine IncompleteKeyShare + AuxInfo → complete KeyShare + derive ETH address.
+pub fn complete_key_share(
+    incomplete: IncompleteKeyShare<Secp256k1>,
+    aux_info: AuxInfo,
+) -> Result<KeygenOutput, MpcError> {
+    let key_share = cggmp21::KeyShare::from_parts((incomplete, aux_info))
+        .map_err(|e| MpcError::Keygen(format!("failed to combine key share: {e:?}")))?;
+
+    // Derive Ethereum address from shared public key
+    let public_key_point = key_share.shared_public_key;
+    let encoded = public_key_point.to_bytes(false);
+    let pub_bytes = encoded.as_ref();
+    let public_key = format!("0x{}", hex::encode(pub_bytes));
+
+    let mut hasher = Keccak256::new();
+    hasher.update(&pub_bytes[1..]);
+    let hash = hasher.finalize();
+    let address = format!("0x{}", hex::encode(&hash[12..]));
+
+    tracing::info!(address = %address, "key share completed");
+
+    Ok(KeygenOutput {
+        key_share,
+        address,
+        public_key,
+    })
+}
+
+/// Serialize a KeyShare for storage.
+pub fn serialize_key_share(
+    key_share: &cggmp21::KeyShare<Secp256k1>,
+) -> Result<Vec<u8>, MpcError> {
+    serde_json::to_vec(key_share).map_err(MpcError::Serde)
+}
+
+/// Deserialize a KeyShare from storage.
+pub fn deserialize_key_share(
+    data: &[u8],
+) -> Result<cggmp21::KeyShare<Secp256k1>, MpcError> {
+    serde_json::from_slice(data).map_err(MpcError::Serde)
 }

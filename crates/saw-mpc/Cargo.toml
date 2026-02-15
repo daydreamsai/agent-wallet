@@ -5,9 +5,10 @@ edition = "2021"
 description = "Threshold signing core for SAW — keygen, presigning, signing via CGGMP21"
 
 [dependencies]
-cggmp21 = { version = "0.6", features = ["hd-wallet"] }
+cggmp21 = { version = "0.6", features = ["hd-wallet", "curve-secp256k1"] }
 round-based = "0.3"
 futures = "0.3"
+generic-ec = "0.4"
 hex = "0.4"
 k256 = { version = "0.13", features = ["ecdsa"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
@@ -19,3 +20,6 @@ thiserror = "1"
 tokio = { version = "1", features = ["sync", "macros", "rt-multi-thread", "net", "io-util", "time"] }
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 tracing = "0.1"
+
+[dev-dependencies]
+tracing-subscriber = "0.3"

@@ -1,12 +1,13 @@
 //! saw-mpc: Threshold signing core for SAW
 //!
-//! Provides CGGMP21-based 2-of-3 threshold ECDSA:
-//! - Key generation ceremony (all 3 parties)
+//! Provides CGGMP21-based threshold ECDSA:
+//! - Key generation ceremony (all parties)
 //! - Auxiliary info generation (Paillier setup)
-//! - Presignature generation (2 parties, background)
-//! - Online signing (2 parties, single round with presignature)
+//! - Presignature generation (t parties, background)
+//! - Online signing (single round with presignature)
 //!
-//! Network-agnostic: callers provide Stream/Sink transports.
+//! Network-agnostic: callers provide Stream/Sink transports
+//! via the `round_based::Delivery` trait.
 
 pub mod error;
 pub mod keygen;
@@ -16,4 +17,9 @@ pub mod transport;
 pub mod types;
 
 pub use error::MpcError;
-pub use types::{KeyShare, PartyId, ThresholdConfig};
+pub use types::{KeyShareData, PartyId, ThresholdConfig};
+
+// Re-export key cggmp21 types that consumers need
+pub use cggmp21::supported_curves::Secp256k1;
+pub use cggmp21::ExecutionId;
+pub use cggmp21::KeyShare;

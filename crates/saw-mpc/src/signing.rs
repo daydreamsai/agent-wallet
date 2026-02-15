@@ -1,38 +1,31 @@
 //! Signing: presignature generation and online signing.
 //!
 //! Two-phase approach for minimum latency:
-//! 1. Presign (background): 3 MPC rounds between 2 parties → presignature
+//! 1. Presign (background): 3 MPC rounds between t parties → presignature
 //! 2. Sign (online): combine presignature + message hash → ECDSA signature
 //!
-//! Presignatures are message-independent and can be stockpiled.
+//! SECURITY: Never reuse a presignature for two different messages!
+
+use rand_core::OsRng;
+
+use cggmp21::supported_curves::Secp256k1;
+use cggmp21::{DataToSign, ExecutionId, PartialSignature};
 
 use crate::error::MpcError;
-use crate::types::KeyShare;
 
-/// A presignature share — the output of the presigning protocol.
-/// Consumed exactly once to produce a signature.
-///
-/// SECURITY: Never reuse a presignature for two different messages.
-/// Doing so leaks the private key.
-#[derive(Debug)]
-pub struct Presignature {
-    // Will hold cggmp21::Presignature internally
-    _placeholder: (),
-}
+// Re-export types callers need
+pub use cggmp21::Presignature;
+pub use cggmp21::Signature as CggmpSignature;
 
-/// An ECDSA signature produced by combining presignature shares.
+/// ECDSA signature with recovery id for Ethereum.
 #[derive(Debug, Clone)]
-pub struct Signature {
-    /// r component
+pub struct EthSignature {
     pub r: [u8; 32],
-    /// s component
     pub s: [u8; 32],
-    /// recovery id (0 or 1)
     pub v: u8,
 }
 
-impl Signature {
-    /// Encode as 65-byte RSV format (r || s || v).
+impl EthSignature {
     pub fn to_rsv(&self) -> [u8; 65] {
         let mut out = [0u8; 65];
         out[..32].copy_from_slice(&self.r);
@@ -41,19 +34,15 @@ impl Signature {
         out
     }
 
-    /// Hex-encoded signature with 0x prefix.
     pub fn to_hex(&self) -> String {
         format!("0x{}", hex::encode(self.to_rsv()))
     }
 }
 
-/// Manages a pool of presignatures for low-latency signing.
+/// Pool of ready-to-use presignatures for low-latency signing.
 pub struct PresignaturePool {
-    /// Ready-to-use presignatures
-    pool: Vec<Presignature>,
-    /// Target pool size
+    pool: Vec<cggmp21::Presignature<Secp256k1>>,
     target_size: usize,
-    /// Refill when pool drops below this
     refill_threshold: usize,
 }
 
@@ -66,107 +55,104 @@ impl PresignaturePool {
         }
     }
 
-    /// Take a presignature from the pool. Returns None if empty.
-    pub fn take(&mut self) -> Option<Presignature> {
+    pub fn take(&mut self) -> Option<cggmp21::Presignature<Secp256k1>> {
         self.pool.pop()
     }
 
-    /// Number of presignatures available.
     pub fn available(&self) -> usize {
         self.pool.len()
     }
 
-    /// Whether the pool needs refilling.
     pub fn needs_refill(&self) -> bool {
         self.pool.len() < self.refill_threshold
     }
 
-    /// How many presignatures to generate on next refill.
     pub fn refill_count(&self) -> usize {
         self.target_size.saturating_sub(self.pool.len())
     }
 
-    /// Add a presignature to the pool.
-    pub fn add(&mut self, presig: Presignature) {
+    pub fn add(&mut self, presig: cggmp21::Presignature<Secp256k1>) {
         self.pool.push(presig);
     }
 }
 
-/// Generate a presignature by running the presigning protocol
-/// between this party and one other party.
-///
-/// # Protocol Flow
-///
-/// ```text
-/// Party A (e.g., daemon)          Party B (e.g., policy)
-///     │                                │
-///     ├── Presign Round 1 ────────────►│
-///     │◄── Presign Round 1 ────────────┤
-///     │                                │
-///     ├── Presign Round 2 ────────────►│
-///     │◄── Presign Round 2 ────────────┤
-///     │                                │
-///     ├── Presign Round 3 ────────────►│
-///     │◄── Presign Round 3 ────────────┤
-///     │                                │
-///     │  [Both hold presignature shares]
-/// ```
-pub async fn generate_presignature(
-    _key_share: &KeyShare,
-    // TODO: transport, signing party indices
-) -> Result<Presignature, MpcError> {
-    // TODO: Implement using cggmp21:
-    //
-    // let eid = cggmp21::ExecutionId::new(session_id.as_bytes());
-    // let signers = [PARTY_DAEMON, PARTY_POLICY]; // keygen indices of signing parties
-    //
-    // let presig = cggmp21::signing(eid, my_index_in_signers, &signers, &key_share)
-    //     .generate_presignature(&mut OsRng, party)
-    //     .await
-    //     .map_err(|e| MpcError::Presign(e.to_string()))?;
+/// Generate a presignature via MPC between t parties.
+pub async fn generate_presignature<D>(
+    eid: ExecutionId<'_>,
+    party_index_in_signing: u16,
+    parties_indexes_at_keygen: &[u16],
+    key_share: &cggmp21::KeyShare<Secp256k1>,
+    delivery: D,
+) -> Result<cggmp21::Presignature<Secp256k1>, MpcError>
+where
+    D: cggmp21::round_based::Delivery<
+        cggmp21::signing::msg::Msg<Secp256k1, sha2::Sha256>,
+    >,
+{
+    tracing::info!(
+        party_index_in_signing,
+        ?parties_indexes_at_keygen,
+        "starting presignature generation"
+    );
 
-    Err(MpcError::Presign("presigning not yet implemented — scaffolding only".into()))
+    let party = cggmp21::round_based::MpcParty::connected(delivery);
+
+    let presig = cggmp21::signing(eid, party_index_in_signing, parties_indexes_at_keygen, key_share)
+        .generate_presignature(&mut OsRng, party)
+        .await
+        .map_err(|e| MpcError::Presign(format!("{e:?}")))?;
+
+    tracing::info!("presignature generation complete");
+    Ok(presig)
 }
 
-/// Sign a message hash using a presignature.
-///
-/// This is the fast path — single round, no network needed if
-/// both partial signatures are available.
-///
-/// # Protocol Flow
-///
-/// ```text
-/// 1. Each party: presig.issue_partial_signature(hash) → PartialSignature
-/// 2. Combine: PartialSignature::combine(&[partial_a, partial_b]) → Signature
-/// ```
-pub async fn sign_with_presignature(
-    _presig: Presignature,
-    _message_hash: &[u8; 32],
-    // TODO: transport for partial signature exchange
-) -> Result<Signature, MpcError> {
-    // TODO: Implement using cggmp21:
-    //
-    // let data = cggmp21::DataToSign::from_digest(message_hash);
-    // let partial = presig.issue_partial_signature(data);
-    // // Exchange partial signatures with the other party
-    // let signature = cggmp21::PartialSignature::combine(&[my_partial, their_partial])?;
-
-    Err(MpcError::Signing("signing not yet implemented — scaffolding only".into()))
+/// Issue a partial signature from a presignature (local, no network).
+pub fn issue_partial_signature(
+    presig: cggmp21::Presignature<Secp256k1>,
+    message_hash: &[u8; 32],
+) -> PartialSignature<Secp256k1> {
+    let data = DataToSign::from_digest(sha2::Sha256::new_with_prefix(message_hash));
+    presig.issue_partial_signature(data)
 }
 
-/// Full signing without a presignature (slower, all rounds inline).
-/// Use when presignature pool is empty.
-pub async fn sign_full(
-    _key_share: &KeyShare,
-    _message_hash: &[u8; 32],
-    // TODO: transport, signing party indices
-) -> Result<Signature, MpcError> {
-    // TODO: Implement using cggmp21:
-    //
-    // let data = cggmp21::DataToSign::from_digest(message_hash);
-    // let signature = cggmp21::signing(eid, i, &signers, &key_share)
-    //     .sign(&mut OsRng, party, data)
-    //     .await?;
-
-    Err(MpcError::Signing("full signing not yet implemented — scaffolding only".into()))
+/// Combine partial signatures into a complete ECDSA signature.
+pub fn combine_partial_signatures(
+    partials: &[PartialSignature<Secp256k1>],
+) -> Result<CggmpSignature<Secp256k1>, MpcError> {
+    PartialSignature::combine(partials)
+        .ok_or_else(|| MpcError::Signing("failed to combine partial signatures — possible cheating".into()))
 }
+
+/// Full signing in one shot (all MPC rounds inline, no presignature).
+pub async fn sign_full<D>(
+    eid: ExecutionId<'_>,
+    party_index_in_signing: u16,
+    parties_indexes_at_keygen: &[u16],
+    key_share: &cggmp21::KeyShare<Secp256k1>,
+    message_hash: &[u8; 32],
+    delivery: D,
+) -> Result<CggmpSignature<Secp256k1>, MpcError>
+where
+    D: cggmp21::round_based::Delivery<
+        cggmp21::signing::msg::Msg<Secp256k1, sha2::Sha256>,
+    >,
+{
+    tracing::info!(
+        party_index_in_signing,
+        ?parties_indexes_at_keygen,
+        "starting full signing"
+    );
+
+    let data = DataToSign::from_digest(sha2::Sha256::new_with_prefix(message_hash));
+    let party = cggmp21::round_based::MpcParty::connected(delivery);
+
+    let sig = cggmp21::signing(eid, party_index_in_signing, parties_indexes_at_keygen, key_share)
+        .sign(&mut OsRng, party, data)
+        .await
+        .map_err(|e| MpcError::Signing(format!("{e:?}")))?;
+
+    tracing::info!("full signing complete");
+    Ok(sig)
+}
+
+use sha2::Digest as _;

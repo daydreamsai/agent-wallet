@@ -1,85 +1,109 @@
-//! Transport layer: adapts WebSocket connections to the Stream/Sink
-//! interface that cggmp21's round-based protocols expect.
+//! Transport layer: provides `Delivery` implementations for cggmp21.
 //!
-//! Each MPC session gets a pair of (incoming Stream, outgoing Sink)
-//! that carries serialized protocol messages over an authenticated
-//! WebSocket connection.
+//! - `in_memory_delivery`: for testing with multiple parties in one process
+//! - WebSocket delivery: TODO for production use
+
+use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
-use serde::{de::DeserializeOwned, Serialize};
-use tokio_tungstenite::tungstenite::Message as WsMessage;
-use tracing::{debug, error};
+use cggmp21::round_based::{
+    Incoming, MessageDestination, MessageType, MsgId, Outgoing, PartyIndex,
+};
+use tokio::sync::Mutex;
 
-use crate::types::{MpcMessage, PartyId};
+/// Error type for delivery.
+#[derive(Debug)]
+pub struct DeliveryError(pub String);
 
-/// Channel capacity for MPC message passing.
-const CHANNEL_CAPACITY: usize = 64;
-
-/// Creates an in-memory transport pair for testing.
-/// Returns (party_a_tx, party_a_rx, party_b_tx, party_b_rx).
-pub fn in_memory_pair() -> (
-    mpsc::Sender<MpcMessage>,
-    mpsc::Receiver<MpcMessage>,
-    mpsc::Sender<MpcMessage>,
-    mpsc::Receiver<MpcMessage>,
-) {
-    let (a_tx, b_rx) = mpsc::channel(CHANNEL_CAPACITY);
-    let (b_tx, a_rx) = mpsc::channel(CHANNEL_CAPACITY);
-    (a_tx, a_rx, b_tx, b_rx)
+impl fmt::Display for DeliveryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "delivery error: {}", self.0)
+    }
 }
 
-/// Creates an in-memory transport hub for N parties (for testing/keygen).
-/// Returns a Vec of (sender, receiver) pairs, one per party.
-/// Messages sent by party i are delivered to the appropriate recipient(s).
-pub fn in_memory_hub(n: usize) -> Vec<(mpsc::Sender<MpcMessage>, mpsc::Receiver<MpcMessage>)> {
-    // Each party gets a sender (to hub) and receiver (from hub)
-    let mut to_hub: Vec<mpsc::Sender<MpcMessage>> = Vec::with_capacity(n);
-    let mut from_parties: Vec<mpsc::Receiver<MpcMessage>> = Vec::with_capacity(n);
-    let mut to_parties: Vec<mpsc::Sender<MpcMessage>> = Vec::with_capacity(n);
-    let mut from_hub: Vec<mpsc::Receiver<MpcMessage>> = Vec::with_capacity(n);
+impl std::error::Error for DeliveryError {}
+
+/// In-memory delivery for N parties in one process (testing).
+///
+/// Returns a Vec of (Receiver, Sender) pairs — one per party — that
+/// implement the `Delivery` trait expected by cggmp21.
+pub fn in_memory_delivery<M>(
+    n: u16,
+) -> Vec<(
+    mpsc::UnboundedReceiver<Result<Incoming<M>, DeliveryError>>,
+    mpsc::UnboundedSender<Outgoing<M>>,
+)>
+where
+    M: Clone + Send + 'static,
+{
+    let msg_counter = Arc::new(AtomicU64::new(0));
+
+    let mut party_out_txs = Vec::with_capacity(n as usize);
+    let mut party_in_txs: Vec<mpsc::UnboundedSender<Result<Incoming<M>, DeliveryError>>> =
+        Vec::with_capacity(n as usize);
+    let mut party_in_rxs = Vec::with_capacity(n as usize);
+
+    let mut out_rxs = Vec::with_capacity(n as usize);
 
     for _ in 0..n {
-        let (tx_to_hub, rx_from_party) = mpsc::channel(CHANNEL_CAPACITY);
-        let (tx_to_party, rx_from_hub) = mpsc::channel(CHANNEL_CAPACITY);
-        to_hub.push(tx_to_hub);
-        from_parties.push(rx_from_party);
-        to_parties.push(tx_to_party);
-        from_hub.push(rx_from_hub);
+        let (out_tx, out_rx) = mpsc::unbounded::<Outgoing<M>>();
+        let (in_tx, in_rx) = mpsc::unbounded::<Result<Incoming<M>, DeliveryError>>();
+        party_out_txs.push(out_tx);
+        out_rxs.push(out_rx);
+        party_in_txs.push(in_tx);
+        party_in_rxs.push(in_rx);
     }
 
-    // Spawn a hub task that routes messages
-    let n_parties = n;
-    tokio::spawn(async move {
-        // Merge all incoming streams
-        let mut combined = futures::stream::select_all(
-            from_parties
-                .into_iter()
-                .map(|rx| rx.boxed()),
-        );
+    let shared_in_txs = Arc::new(party_in_txs);
 
-        while let Some(msg) = combined.next().await {
-            match msg.to {
-                Some(recipient) => {
-                    // P2P: send to specific party
-                    if (recipient as usize) < n_parties {
-                        let _ = to_parties[recipient as usize].send(msg).await;
+    // Spawn a router per sender party
+    for sender_idx in 0..n {
+        let mut rx = out_rxs.remove(0);
+        let txs = shared_in_txs.clone();
+        let counter = msg_counter.clone();
+        let n_parties = n;
+
+        tokio::spawn(async move {
+            while let Some(outgoing) = rx.next().await {
+                let msg_id = counter.fetch_add(1, Ordering::Relaxed);
+
+                match outgoing.recipient {
+                    MessageDestination::AllParties => {
+                        for r in 0..n_parties {
+                            if r != sender_idx {
+                                let incoming = Incoming {
+                                    id: msg_id,
+                                    sender: sender_idx,
+                                    msg_type: MessageType::Broadcast,
+                                    msg: outgoing.msg.clone(),
+                                };
+                                let _ = txs[r as usize].unbounded_send(Ok(incoming));
+                            }
+                        }
                     }
-                }
-                None => {
-                    // Broadcast: send to all except sender
-                    for (i, tx) in to_parties.iter_mut().enumerate() {
-                        if i != msg.from as usize {
-                            let _ = tx.send(msg.clone()).await;
+                    MessageDestination::OneParty(recipient) => {
+                        if recipient < n_parties {
+                            let incoming = Incoming {
+                                id: msg_id,
+                                sender: sender_idx,
+                                msg_type: MessageType::P2P,
+                                msg: outgoing.msg.clone(),
+                            };
+                            let _ = txs[recipient as usize].unbounded_send(Ok(incoming));
                         }
                     }
                 }
             }
-        }
-    });
+        });
+    }
 
-    to_hub
+    // Return (incoming_rx, outgoing_tx) pairs — this tuple implements Delivery
+    party_in_rxs
         .into_iter()
-        .zip(from_hub.into_iter())
+        .zip(party_out_txs)
+        .map(|(rx, tx)| (rx, tx))
         .collect()
 }
