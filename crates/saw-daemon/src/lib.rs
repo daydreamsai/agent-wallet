@@ -165,13 +165,21 @@ impl Server {
                 let full_path = root.join(share_path);
 
                 let key_share = match std::fs::read(&full_path) {
-                    Ok(data) => match saw_mpc::keygen::deserialize_key_share(&data) {
-                        Ok(ks) => ks,
-                        Err(e) => {
-                            eprintln!("warning: failed to parse key share for {wallet}: {e}");
+                    Ok(data) => {
+                        // Try encrypted first (SAW_PASSPHRASE env var), fall back to plaintext
+                        let passphrase = std::env::var("SAW_PASSPHRASE").unwrap_or_default();
+                        if saw_mpc::encryption::is_encrypted(&data) && passphrase.is_empty() {
+                            eprintln!("error: key share for {wallet} is encrypted but SAW_PASSPHRASE not set");
                             continue;
                         }
-                    },
+                        match saw_mpc::keygen::deserialize_key_share_encrypted(&data, passphrase.as_bytes()) {
+                            Ok(ks) => ks,
+                            Err(e) => {
+                                eprintln!("warning: failed to parse key share for {wallet}: {e}");
+                                continue;
+                            }
+                        }
+                    }
                     Err(e) => {
                         eprintln!("warning: failed to read key share for {wallet}: {e}");
                         continue;

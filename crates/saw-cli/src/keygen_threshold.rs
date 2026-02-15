@@ -106,13 +106,24 @@ pub async fn run_party(
     eprintln!("  Address: {address}");
     eprintln!("  Public key: {public_key}");
 
-    // Save key share
+    // Save key share (encrypted if passphrase provided via SAW_PASSPHRASE env var)
     let share_dir = root.join("keys").join("threshold");
     fs::create_dir_all(&share_dir).map_err(|e| format!("create dir: {e}"))?;
 
     let share_path = share_dir.join(format!("{wallet}.json"));
-    let share_data = keygen::serialize_key_share(&output.key_share)
-        .map_err(|e| format!("serialize: {e}"))?;
+    let passphrase = std::env::var("SAW_PASSPHRASE").ok();
+    let share_data = match &passphrase {
+        Some(pp) if !pp.is_empty() => {
+            eprintln!("  🔒 Encrypting key share (Argon2id + ChaCha20-Poly1305)...");
+            keygen::serialize_key_share_encrypted(&output.key_share, pp.as_bytes())
+                .map_err(|e| format!("encrypt: {e}"))?
+        }
+        _ => {
+            eprintln!("  ⚠️  No SAW_PASSPHRASE set — saving key share UNENCRYPTED");
+            keygen::serialize_key_share(&output.key_share)
+                .map_err(|e| format!("serialize: {e}"))?
+        }
+    };
 
     fs::write(&share_path, &share_data).map_err(|e| format!("write: {e}"))?;
     fs::set_permissions(&share_path, fs::Permissions::from_mode(0o600))

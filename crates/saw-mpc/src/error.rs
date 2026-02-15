@@ -25,4 +25,7 @@ pub enum MpcError {
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("encryption error: {0}")]
+    Encryption(String),
 }

@@ -128,3 +128,22 @@ pub fn deserialize_key_share(
 ) -> Result<cggmp21::KeyShare<Secp256k1>, MpcError> {
     serde_json::from_slice(data).map_err(MpcError::Serde)
 }
+
+/// Serialize and encrypt a KeyShare for storage.
+pub fn serialize_key_share_encrypted(
+    key_share: &cggmp21::KeyShare<Secp256k1>,
+    passphrase: &[u8],
+) -> Result<Vec<u8>, MpcError> {
+    let plaintext = serialize_key_share(key_share)?;
+    crate::encryption::encrypt(&plaintext, passphrase)
+}
+
+/// Decrypt and deserialize a KeyShare from storage.
+/// If the data is not encrypted, falls back to plaintext deserialization.
+pub fn deserialize_key_share_encrypted(
+    data: &[u8],
+    passphrase: &[u8],
+) -> Result<cggmp21::KeyShare<Secp256k1>, MpcError> {
+    let plaintext = crate::encryption::decrypt(data, passphrase)?;
+    serde_json::from_slice(&plaintext).map_err(MpcError::Serde)
+}

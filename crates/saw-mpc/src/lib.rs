@@ -9,6 +9,7 @@
 //! Network-agnostic: callers provide Stream/Sink transports
 //! via the `round_based::Delivery` trait.
 
+pub mod encryption;
 pub mod error;
 pub mod keygen;
 pub mod protocol;
