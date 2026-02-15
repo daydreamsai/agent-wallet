@@ -11,7 +11,6 @@ use cggmp21::{
 };
 
 use crate::error::MpcError;
-use crate::types::KeyShareData;
 
 /// Output of a successful keygen ceremony.
 pub struct KeygenOutput {
