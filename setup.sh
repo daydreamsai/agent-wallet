@@ -73,7 +73,7 @@ sleep 3
 
 # ── Onboarding (first run only) ─────────────────────────────────────────
 OPENCLAW_CONFIG_PATH="/home/node/.openclaw/openclaw.json"
-has_config=$(docker compose exec -T saw test -f "$OPENCLAW_CONFIG_PATH" && echo "yes" || echo "no")
+has_config=$(docker compose exec -T saw test -f "$OPENCLAW_CONFIG_PATH" 2>/dev/null && echo "yes" || echo "no")
 
 if [[ "$has_config" == "no" ]]; then
     echo ""
@@ -96,7 +96,7 @@ if [[ "$has_config" == "no" ]]; then
     stty sane 2>/dev/null || true
 
     # Verify onboarding actually created the config
-    has_config=$(docker compose exec -T saw test -f "$OPENCLAW_CONFIG_PATH" && echo "yes" || echo "no")
+    has_config=$(docker compose exec -T saw test -f "$OPENCLAW_CONFIG_PATH" 2>/dev/null && echo "yes" || echo "no")
     if [[ "$has_config" == "no" ]]; then
         echo ""
         echo "Onboarding did not complete. Retry with:"
