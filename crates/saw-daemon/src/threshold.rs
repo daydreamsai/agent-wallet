@@ -6,15 +6,22 @@
 //! - **Fast path** (presignature available): local partial sig + exchange
 //!   with policy → sub-50ms signing latency
 //! - **Slow path** (pool empty): full inline MPC signing (fallback)
+//!
+//! The client maintains a persistent WebSocket connection for fast-path
+//! signing. If the connection drops, it auto-reconnects on the next request.
+//! Presignature generation uses separate per-operation connections since
+//! it runs in the background and isn't latency-critical.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures::channel::mpsc;
+use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use cggmp21::round_based::{Incoming, MessageDestination, MessageType, Outgoing};
 use saw_mpc::protocol::*;
@@ -27,16 +34,134 @@ use saw_mpc::{KeyShare, Secp256k1};
 const DEFAULT_POOL_SIZE: usize = 5;
 const DEFAULT_REFILL_THRESHOLD: usize = 2;
 
+/// Max reconnect backoff.
+const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
+
+// Type aliases for the persistent WS connection
+type WsTx = SplitSink<WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>, WsMessage>;
+type WsRx = SplitStream<WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>>;
+
+/// A persistent WebSocket connection that auto-reconnects on failure.
+struct PersistentWs {
+    url: String,
+    tx: Option<WsTx>,
+    rx: Option<WsRx>,
+    /// Consecutive connection failures (for backoff).
+    failures: u32,
+}
+
+impl PersistentWs {
+    fn new(url: String) -> Self {
+        Self {
+            url,
+            tx: None,
+            rx: None,
+            failures: 0,
+        }
+    }
+
+    /// Ensure we have a live connection. Returns Ok if connected.
+    async fn ensure_connected(&mut self) -> Result<(), ThresholdError> {
+        if self.tx.is_some() && self.rx.is_some() {
+            return Ok(());
+        }
+
+        let (ws_stream, _) = tokio_tungstenite::connect_async(&self.url)
+            .await
+            .map_err(|e| ThresholdError::PolicyUnavailable(format!("connect: {e}")))?;
+
+        let (tx, rx) = ws_stream.split();
+        self.tx = Some(tx);
+        self.rx = Some(rx);
+        self.failures = 0;
+        eprintln!("persistent WS connected to {}", self.url);
+        Ok(())
+    }
+
+    /// Mark connection as dead (will reconnect on next use).
+    fn invalidate(&mut self) {
+        self.tx = None;
+        self.rx = None;
+        self.failures = self.failures.saturating_add(1);
+    }
+
+    /// Backoff duration based on consecutive failures.
+    fn backoff(&self) -> Duration {
+        let secs = (1u64 << self.failures.min(5)).min(MAX_RECONNECT_DELAY.as_secs());
+        Duration::from_secs(secs)
+    }
+
+    /// Send a wire message. Returns Err and invalidates on failure.
+    async fn send(&mut self, msg: &WireMessage) -> Result<(), ThresholdError> {
+        self.ensure_connected().await?;
+        let data = serde_json::to_vec(msg)
+            .map_err(|e| ThresholdError::Transport(format!("serialize: {e}")))?;
+        let tx = self.tx.as_mut().unwrap();
+        if let Err(e) = tx.send(WsMessage::Binary(data.into())).await {
+            self.invalidate();
+            return Err(ThresholdError::Transport(format!("send: {e}")));
+        }
+        Ok(())
+    }
+
+    /// Read the next wire message. Returns Err and invalidates on failure.
+    async fn recv(&mut self) -> Result<WireMessage, ThresholdError> {
+        let rx = self.rx.as_mut().ok_or_else(|| {
+            ThresholdError::PolicyUnavailable("not connected".into())
+        })?;
+        loop {
+            match rx.next().await {
+                Some(Ok(WsMessage::Binary(d))) => {
+                    return serde_json::from_slice(&d)
+                        .map_err(|e| ThresholdError::Transport(format!("deserialize: {e}")));
+                }
+                Some(Ok(WsMessage::Text(t))) => {
+                    return serde_json::from_str(&t)
+                        .map_err(|e| ThresholdError::Transport(format!("deserialize: {e}")));
+                }
+                Some(Ok(WsMessage::Ping(_) | WsMessage::Pong(_))) => continue,
+                Some(Ok(WsMessage::Close(_))) => {
+                    self.invalidate();
+                    return Err(ThresholdError::Transport("ws closed by remote".into()));
+                }
+                Some(Err(e)) => {
+                    self.invalidate();
+                    return Err(ThresholdError::Transport(format!("ws error: {e}")));
+                }
+                None => {
+                    self.invalidate();
+                    return Err(ThresholdError::Transport("ws stream ended".into()));
+                }
+                _ => continue,
+            }
+        }
+    }
+
+    /// Read with timeout. Returns None on timeout (connection stays valid).
+    async fn recv_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<WireMessage>, ThresholdError> {
+        match tokio::time::timeout(timeout, self.recv()).await {
+            Ok(result) => result.map(Some),
+            Err(_) => Ok(None),
+        }
+    }
+}
+
 /// Persistent connection to saw-policy for threshold signing.
 pub struct ThresholdClient {
     key_share: KeyShare<Secp256k1>,
     policy_url: String,
     /// Presignature pool (shared with background refill task).
     pool: Arc<Mutex<PresignaturePool>>,
+    /// Persistent WS for fast-path signing.
+    ws: Arc<Mutex<PersistentWs>>,
 }
 
 impl ThresholdClient {
     pub fn new(key_share: KeyShare<Secp256k1>, policy_url: String) -> Self {
+        let ws = Arc::new(Mutex::new(PersistentWs::new(policy_url.clone())));
         Self {
             key_share,
             policy_url,
@@ -44,6 +169,7 @@ impl ThresholdClient {
                 DEFAULT_POOL_SIZE,
                 DEFAULT_REFILL_THRESHOLD,
             ))),
+            ws,
         }
     }
 
@@ -53,7 +179,7 @@ impl ThresholdClient {
     }
 
     /// Start the background presignature refill loop.
-    /// Call once after constructing the client. Runs until dropped.
+    /// Runs until the task is dropped/aborted.
     pub fn start_presign_refill(&self) -> tokio::task::JoinHandle<()> {
         let pool = self.pool.clone();
         let key_share = self.key_share.clone();
@@ -61,14 +187,9 @@ impl ThresholdClient {
 
         tokio::spawn(async move {
             loop {
-                // Check if pool needs refill
                 let count = {
                     let p = pool.lock().await;
-                    if p.needs_refill() {
-                        p.refill_count()
-                    } else {
-                        0
-                    }
+                    if p.needs_refill() { p.refill_count() } else { 0 }
                 };
 
                 if count > 0 {
@@ -81,7 +202,6 @@ impl ThresholdClient {
                             }
                             Err(e) => {
                                 eprintln!("presignature generation failed: {e}, will retry");
-                                // Back off before retrying on error
                                 tokio::time::sleep(Duration::from_secs(5)).await;
                                 break;
                             }
@@ -89,7 +209,6 @@ impl ThresholdClient {
                     }
                 }
 
-                // Sleep before checking again
                 tokio::time::sleep(Duration::from_secs(10)).await;
             }
         })
@@ -97,7 +216,8 @@ impl ThresholdClient {
 
     /// Sign a message hash via threshold signing.
     ///
-    /// Fast path: uses a presignature from the pool (partial sig exchange).
+    /// Fast path: uses a presignature from the pool (partial sig exchange
+    /// over persistent WS connection).
     /// Slow path: falls back to full MPC signing if pool is empty.
     pub async fn sign(
         &self,
@@ -106,7 +226,7 @@ impl ThresholdClient {
         tx_details: TxDetails,
         message_hash: &[u8; 32],
     ) -> Result<ThresholdSignResult, ThresholdError> {
-        // Try fast path first
+        // Try fast path
         let presig_entry = {
             let mut pool = self.pool.lock().await;
             pool.take_next()
@@ -114,17 +234,26 @@ impl ThresholdClient {
 
         if let Some((presig_index, presignature)) = presig_entry {
             eprintln!("using presignature {presig_index} (fast path)");
-            return self
-                .sign_with_presignature(wallet, action, tx_details, message_hash, presig_index, presignature)
-                .await;
+            match self
+                .sign_with_presignature(wallet, action.clone(), tx_details.clone(), message_hash, presig_index, presignature)
+                .await
+            {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    // Fast path failed (e.g. presig index mismatch after reconnect).
+                    // Fall through to slow path rather than losing the request.
+                    eprintln!("fast path failed: {e}, falling back to slow path");
+                }
+            }
+        } else {
+            eprintln!("no presignatures available, using slow path");
         }
 
-        // Slow path: full MPC signing
-        eprintln!("no presignatures available, falling back to full MPC signing");
+        // Slow path: full MPC signing (separate connection)
         self.sign_full_mpc(wallet, action, tx_details, message_hash).await
     }
 
-    /// Fast path: sign using a pre-generated presignature.
+    /// Fast path: sign using a pre-generated presignature over the persistent WS.
     async fn sign_with_presignature(
         &self,
         wallet: &str,
@@ -136,19 +265,13 @@ impl ThresholdClient {
     ) -> Result<ThresholdSignResult, ThresholdError> {
         let request_id = generate_request_id();
 
-        // Connect to policy
-        let (ws_stream, _) = tokio_tungstenite::connect_async(&self.policy_url)
-            .await
-            .map_err(|e| ThresholdError::PolicyUnavailable(format!("connect: {e}")))?;
-
-        let (mut ws_tx, mut ws_rx) = ws_stream.split();
-
-        // Issue our partial signature locally (no network!)
+        // Issue our partial signature locally (zero network!)
         let our_partial = signing::issue_partial_signature(presignature, message_hash);
         let our_partial_bytes = serde_json::to_vec(&our_partial)
             .map_err(|e| ThresholdError::Mpc(format!("serialize partial: {e}")))?;
+        let _ = our_partial_bytes; // used for potential future optimization
 
-        // Send partial sign request to policy
+        // Send partial sign request over persistent connection
         let req = WireMessage::PartialSignRequest(PartialSignRequest {
             request_id: request_id.clone(),
             presig_index,
@@ -157,17 +280,14 @@ impl ThresholdClient {
             tx_details,
             message_hash: format!("0x{}", hex::encode(message_hash)),
         });
-        let data = serde_json::to_vec(&req)
-            .map_err(|e| ThresholdError::Transport(format!("serialize: {e}")))?;
-        ws_tx
-            .send(WsMessage::Binary(data.into()))
-            .await
-            .map_err(|e| ThresholdError::Transport(format!("send: {e}")))?;
 
-        // Wait for policy's partial signature response
+        let mut ws = self.ws.lock().await;
+        ws.send(&req).await?;
+
+        // Wait for policy's partial signature
         let resp = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                match read_ws_msg(&mut ws_rx).await? {
+                match ws.recv().await? {
                     WireMessage::PartialSignResponse(r) if r.request_id == request_id => {
                         return Ok::<_, ThresholdError>(r);
                     }
@@ -177,6 +297,8 @@ impl ThresholdClient {
         })
         .await
         .map_err(|_| ThresholdError::PolicyUnavailable("partial sign timeout (5s)".into()))??;
+
+        drop(ws); // release lock
 
         if resp.decision != Decision::Approve {
             return Err(match resp.decision {
@@ -192,7 +314,6 @@ impl ThresholdClient {
             });
         }
 
-        // Deserialize policy's partial signature
         let policy_partial_bytes = resp
             .partial_signature
             .ok_or_else(|| ThresholdError::Mpc("no partial signature in response".into()))?;
@@ -200,7 +321,6 @@ impl ThresholdClient {
             serde_json::from_slice(&policy_partial_bytes)
                 .map_err(|e| ThresholdError::Mpc(format!("deserialize partial: {e}")))?;
 
-        // Combine partials → complete signature
         let signature = signing::combine_partial_signatures(&[our_partial, policy_partial])
             .map_err(|e| ThresholdError::Mpc(format!("{e}")))?;
 
@@ -211,7 +331,7 @@ impl ThresholdClient {
         })
     }
 
-    /// Slow path: full inline MPC signing (original behavior).
+    /// Slow path: full inline MPC signing (separate per-request connection).
     async fn sign_full_mpc(
         &self,
         wallet: &str,
@@ -222,7 +342,6 @@ impl ThresholdClient {
         let request_id = generate_request_id();
         let session_id = SessionId::random();
 
-        // Connect to policy agent
         let (ws_stream, _) = tokio_tungstenite::connect_async(&self.policy_url)
             .await
             .map_err(|e| ThresholdError::PolicyUnavailable(format!("connect: {e}")))?;
@@ -230,7 +349,6 @@ impl ThresholdClient {
         let (ws_tx, mut ws_rx) = ws_stream.split();
         let ws_tx = Arc::new(Mutex::new(ws_tx));
 
-        // Send sign request
         let sign_req = WireMessage::SignRequest(SignRequest {
             request_id: request_id.clone(),
             session_id: session_id.clone(),
@@ -242,7 +360,6 @@ impl ThresholdClient {
 
         send_ws(&ws_tx, &sign_req).await?;
 
-        // Wait for policy decision (with timeout)
         let decision = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 match read_ws_msg(&mut ws_rx).await? {
@@ -281,7 +398,6 @@ impl ThresholdClient {
         let eid_bytes: Vec<u8> = format!("sign-{request_id}").into_bytes();
         let signers = vec![PARTY_DAEMON, PARTY_POLICY];
 
-        // Outgoing: MPC → WS
         let ws_tx_c = ws_tx.clone();
         let sid_out = session_id.clone();
         let out_task = tokio::spawn(async move {
@@ -311,7 +427,6 @@ impl ThresholdClient {
             }
         });
 
-        // Sign task
         let ks = self.key_share.clone();
         let hash = *message_hash;
         let sign_task = tokio::spawn(async move {
@@ -319,7 +434,6 @@ impl ThresholdClient {
             signing::sign_full(eid, 0, &signers, &ks, &hash, (incoming_rx, outgoing_tx)).await
         });
 
-        // Feed incoming MPC messages from WS
         let counter = AtomicU64::new(0);
         let sid_in = session_id;
 
@@ -392,6 +506,7 @@ impl ThresholdClient {
 }
 
 /// Generate one presignature via MPC with the policy server.
+/// Uses a separate per-operation connection (background, not latency-critical).
 async fn generate_one_presignature(
     pool: &Arc<Mutex<PresignaturePool>>,
     key_share: &KeyShare<Secp256k1>,
@@ -404,7 +519,6 @@ async fn generate_one_presignature(
 
     let session_id = SessionId::random();
 
-    // Connect to policy
     let (ws_stream, _) = tokio_tungstenite::connect_async(policy_url)
         .await
         .map_err(|e| ThresholdError::PolicyUnavailable(format!("connect: {e}")))?;
@@ -412,15 +526,13 @@ async fn generate_one_presignature(
     let (ws_tx, mut ws_rx) = ws_stream.split();
     let ws_tx = Arc::new(Mutex::new(ws_tx));
 
-    // Send presign request
     let req = WireMessage::PresignRequest(PresignRequest {
         session_id: session_id.clone(),
         presig_index,
-        wallet: String::new(), // Background presign doesn't need wallet context
+        wallet: String::new(),
     });
     send_ws(&ws_tx, &req).await?;
 
-    // Run presignature generation MPC
     type SignMsg = cggmp21::signing::msg::Msg<Secp256k1, sha2::Sha256>;
     let (incoming_tx, incoming_rx) =
         mpsc::unbounded::<Result<Incoming<SignMsg>, DeliveryError>>();
@@ -429,7 +541,6 @@ async fn generate_one_presignature(
     let eid_bytes: Vec<u8> = format!("presign-{presig_index}").into_bytes();
     let signers = vec![PARTY_DAEMON, PARTY_POLICY];
 
-    // Outgoing: MPC → WS
     let ws_tx_c = ws_tx.clone();
     let sid_out = session_id.clone();
     let out_task = tokio::spawn(async move {
@@ -459,14 +570,12 @@ async fn generate_one_presignature(
         }
     });
 
-    // Presign task
     let ks = key_share.clone();
     let presign_task = tokio::spawn(async move {
         let eid = cggmp21::ExecutionId::new(&eid_bytes);
         signing::generate_presignature(eid, 0, &signers, &ks, (incoming_rx, outgoing_tx)).await
     });
 
-    // Feed incoming MPC messages
     let counter = AtomicU64::new(0);
     let sid_in = session_id;
 
@@ -530,7 +639,6 @@ async fn generate_one_presignature(
 
     out_task.abort();
 
-    // Store in pool
     pool.lock().await.add(presig_index, presignature);
 
     Ok(presig_index)
@@ -546,21 +654,16 @@ pub struct ThresholdSignResult {
 /// Errors specific to threshold signing.
 #[derive(Debug)]
 pub enum ThresholdError {
-    /// Policy agent unreachable or timed out
     PolicyUnavailable(String),
-    /// Policy denied the request
     PolicyDenied {
         rule: Option<String>,
         reason: Option<String>,
     },
-    /// Policy escalated — requires human cosigner
     Escalated {
         rule: Option<String>,
         reason: Option<String>,
     },
-    /// MPC protocol error
     Mpc(String),
-    /// Transport error
     Transport(String),
 }
 
@@ -570,22 +673,14 @@ impl std::fmt::Display for ThresholdError {
             Self::PolicyUnavailable(e) => write!(f, "policy_unavailable: {e}"),
             Self::PolicyDenied { rule, reason } => {
                 write!(f, "policy_denied")?;
-                if let Some(r) = rule {
-                    write!(f, " (rule: {r})")?;
-                }
-                if let Some(r) = reason {
-                    write!(f, ": {r}")?;
-                }
+                if let Some(r) = rule { write!(f, " (rule: {r})")?; }
+                if let Some(r) = reason { write!(f, ": {r}")?; }
                 Ok(())
             }
             Self::Escalated { rule, reason } => {
                 write!(f, "escalated")?;
-                if let Some(r) = rule {
-                    write!(f, " (rule: {r})")?;
-                }
-                if let Some(r) = reason {
-                    write!(f, ": {r}")?;
-                }
+                if let Some(r) = rule { write!(f, " (rule: {r})")?; }
+                if let Some(r) = reason { write!(f, ": {r}")?; }
                 Ok(())
             }
             Self::Mpc(e) => write!(f, "mpc_error: {e}"),
@@ -596,7 +691,7 @@ impl std::fmt::Display for ThresholdError {
 
 impl std::error::Error for ThresholdError {}
 
-// Helpers
+// -- Helpers --
 
 fn generate_request_id() -> String {
     use rand_core::{OsRng, RngCore};
