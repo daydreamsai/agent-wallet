@@ -1610,18 +1610,25 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "bs58",
+ "cggmp21",
  "ed25519-dalek",
  "ethereum-types",
+ "futures",
  "hex",
  "k256",
+ "rand_core",
  "rlp",
  "saw",
+ "saw-mpc",
  "secp256k1",
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "sha3",
  "signal-hook",
+ "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]
@@ -1650,10 +1657,14 @@ dependencies = [
 name = "saw-policy"
 version = "0.1.0"
 dependencies = [
+ "cggmp21",
+ "futures",
+ "hex",
  "saw-mpc",
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "tokio",
  "tokio-tungstenite",
  "tracing",
