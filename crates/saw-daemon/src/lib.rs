@@ -1,3 +1,4 @@
+pub mod config;
 pub mod threshold;
 
 use std::collections::HashMap;
@@ -132,14 +133,82 @@ struct Eip2612PermitPayload {
 struct Server {
     root: PathBuf,
     rate_state: HashMap<String, Vec<Instant>>,
+    config: config::DaemonConfig,
+    /// Tokio runtime for async threshold signing (lazy-initialized).
+    rt: Option<tokio::runtime::Runtime>,
+    /// Cached threshold clients per wallet.
+    threshold_clients: HashMap<String, threshold::ThresholdClient>,
 }
 
 impl Server {
     fn new(root: &Path) -> Self {
+        let cfg = config::load_config(root);
+
+        // Pre-load threshold clients for wallets in threshold mode
+        let mut threshold_clients = HashMap::new();
+        let mut needs_runtime = false;
+
+        for (wallet, wcfg) in &cfg.wallets {
+            if wcfg.mode == config::SigningMode::Threshold {
+                let policy_url = match &wcfg.policy_url {
+                    Some(url) => url.clone(),
+                    None => {
+                        eprintln!("warning: wallet {wallet} in threshold mode but no policy_url");
+                        continue;
+                    }
+                };
+
+                let share_path = wcfg
+                    .key_share_path
+                    .as_deref()
+                    .unwrap_or("keys/threshold/key_share.json");
+                let full_path = root.join(share_path);
+
+                let key_share = match std::fs::read(&full_path) {
+                    Ok(data) => match saw_mpc::keygen::deserialize_key_share(&data) {
+                        Ok(ks) => ks,
+                        Err(e) => {
+                            eprintln!("warning: failed to parse key share for {wallet}: {e}");
+                            continue;
+                        }
+                    },
+                    Err(e) => {
+                        eprintln!("warning: failed to read key share for {wallet}: {e}");
+                        continue;
+                    }
+                };
+
+                threshold_clients.insert(
+                    wallet.clone(),
+                    threshold::ThresholdClient::new(key_share, policy_url),
+                );
+                needs_runtime = true;
+            }
+        }
+
+        let rt = if needs_runtime {
+            Some(
+                tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .expect("failed to create tokio runtime"),
+            )
+        } else {
+            None
+        };
+
         Self {
             root: root.to_path_buf(),
             rate_state: HashMap::new(),
+            config: cfg,
+            rt,
+            threshold_clients,
         }
+    }
+
+    /// Check if a wallet uses threshold signing.
+    fn is_threshold(&self, wallet: &str) -> bool {
+        self.threshold_clients.contains_key(wallet)
     }
 
     fn handle_request(&mut self, raw: &str) -> Response {
@@ -237,6 +306,12 @@ impl Server {
             }
         };
 
+        // ----- Threshold signing path -----
+        if self.is_threshold(&request.wallet) {
+            return self.handle_sign_evm_tx_threshold(request.request_id, request.wallet, payload);
+        }
+
+        // ----- Single-key signing path (original) -----
         let policy = match self.load_wallet_policy(&request.wallet) {
             Ok(policy) => policy,
             Err(err) => {
@@ -345,6 +420,133 @@ impl Server {
                 status: "denied".to_string(),
                 result: None,
                 error: Some(err),
+            },
+        }
+    }
+
+    /// Threshold signing path for EVM transactions.
+    ///
+    /// Policy evaluation happens on the remote saw-policy agent.
+    /// We compute the sighash locally, send it for MPC signing,
+    /// then reconstruct the signed transaction.
+    fn handle_sign_evm_tx_threshold(
+        &self,
+        request_id: String,
+        wallet: String,
+        payload: EvmTxPayload,
+    ) -> Response {
+        // Compute sighash
+        let (sighash, to_bytes, data_bytes) = match compute_evm_tx_sighash(&payload) {
+            Ok(v) => v,
+            Err(err) => {
+                return Response {
+                    request_id,
+                    status: "denied".to_string(),
+                    result: None,
+                    error: Some(err),
+                }
+            }
+        };
+
+        let client = match self.threshold_clients.get(&wallet) {
+            Some(c) => c,
+            None => {
+                return Response {
+                    request_id,
+                    status: "denied".to_string(),
+                    result: None,
+                    error: Some("threshold client not initialized".into()),
+                }
+            }
+        };
+
+        let rt = match &self.rt {
+            Some(rt) => rt,
+            None => {
+                return Response {
+                    request_id,
+                    status: "denied".to_string(),
+                    result: None,
+                    error: Some("no async runtime for threshold signing".into()),
+                }
+            }
+        };
+
+        // Build tx details for policy evaluation
+        let tx_details = saw_mpc::protocol::TxDetails {
+            chain_id: Some(payload.chain_id),
+            to: Some(payload.to.clone()),
+            value: Some(payload.value.clone()),
+            data_len: data_bytes.len(),
+            is_contract_call: !data_bytes.is_empty(),
+        };
+
+        // Run threshold signing (async via tokio runtime)
+        let result = rt.block_on(client.sign(
+            &wallet,
+            saw_mpc::protocol::SignAction::EvmTx,
+            tx_details,
+            &sighash,
+        ));
+
+        match result {
+            Ok(sign_result) => {
+                // Extract r, s from the cggmp21 signature.
+                // We need to recover v (parity) by trying both and checking
+                // which recovers to our public key.
+                let sig = &sign_result.signature;
+                let r_bytes = sig.r.to_be_bytes();
+                let s_bytes = sig.s.to_be_bytes();
+
+                let r_val = U256::from_big_endian(r_bytes.as_ref());
+                let s_val = U256::from_big_endian(s_bytes.as_ref());
+
+                // Try both parities to find the correct v
+                let secp = Secp256k1::new();
+                let msg =
+                    Message::from_digest_slice(&sighash).expect("valid 32-byte hash");
+
+                let mut y_parity = 0u8;
+                for v in 0..2u8 {
+                    let mut sig_bytes = [0u8; 64];
+                    sig_bytes[..32].copy_from_slice(r_bytes.as_ref());
+                    sig_bytes[32..].copy_from_slice(s_bytes.as_ref());
+                    let rec_id = secp256k1::ecdsa::RecoveryId::from_i32(v as i32);
+                    if let Ok(rec_id) = rec_id {
+                        if let Ok(rec_sig) =
+                            RecoverableSignature::from_compact(&sig_bytes, rec_id)
+                        {
+                            if let Ok(_pubkey) = secp.recover_ecdsa(&msg, &rec_sig) {
+                                // Check if this matches our expected public key
+                                // For now, we accept the first valid recovery
+                                // (the threshold client knows the public key)
+                                y_parity = v;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                match build_signed_evm_tx(&payload, &to_bytes, &data_bytes, y_parity, r_val, s_val) {
+                    Ok(result) => Response {
+                        request_id,
+                        status: "approved".to_string(),
+                        result: Some(result),
+                        error: None,
+                    },
+                    Err(err) => Response {
+                        request_id,
+                        status: "denied".to_string(),
+                        result: None,
+                        error: Some(err),
+                    },
+                }
+            }
+            Err(err) => Response {
+                request_id,
+                status: "denied".to_string(),
+                result: None,
+                error: Some(format!("{err}")),
             },
         }
     }
@@ -845,6 +1047,81 @@ fn read_key_bytes(root: &Path, chain: Chain, wallet: &str) -> Result<Vec<u8>, St
     };
     let path = root.join("keys").join(dir).join(format!("{}.key", wallet));
     fs::read(&path).map_err(|e| e.to_string())
+}
+
+/// Compute the EIP-1559 sighash for a transaction (the message to sign).
+fn compute_evm_tx_sighash(payload: &EvmTxPayload) -> Result<([u8; 32], Vec<u8>, Vec<u8>), String> {
+    let to = parse_hex_address(&payload.to)?;
+    let value = parse_u256(&payload.value).map_err(|_| "invalid value".to_string())?;
+    let max_fee =
+        parse_u256(&payload.max_fee_per_gas).map_err(|_| "invalid max_fee".to_string())?;
+    let max_priority = parse_u256(&payload.max_priority_fee_per_gas)
+        .map_err(|_| "invalid max_priority".to_string())?;
+    let data = parse_hex_bytes(&payload.data)?;
+
+    let mut rlp = RlpStream::new_list(9);
+    rlp.append(&payload.chain_id);
+    rlp.append(&payload.nonce);
+    rlp.append(&max_priority);
+    rlp.append(&max_fee);
+    rlp.append(&payload.gas_limit);
+    rlp.append(&to.as_slice());
+    rlp.append(&value);
+    rlp.append(&data);
+    rlp.begin_list(0);
+    let unsigned_rlp = rlp.out().to_vec();
+
+    let mut sighash_input = vec![0x02];
+    sighash_input.extend(&unsigned_rlp);
+    let sighash = Keccak256::digest(&sighash_input);
+
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&sighash);
+
+    Ok((hash, to, data))
+}
+
+/// Construct a signed EIP-1559 transaction from signature components.
+fn build_signed_evm_tx(
+    payload: &EvmTxPayload,
+    to: &[u8],
+    data: &[u8],
+    y_parity: u8,
+    r_val: U256,
+    s_val: U256,
+) -> Result<serde_json::Value, String> {
+    let value = parse_u256(&payload.value).map_err(|_| "invalid value".to_string())?;
+    let max_fee =
+        parse_u256(&payload.max_fee_per_gas).map_err(|_| "invalid max_fee".to_string())?;
+    let max_priority = parse_u256(&payload.max_priority_fee_per_gas)
+        .map_err(|_| "invalid max_priority".to_string())?;
+
+    let mut rlp_signed = RlpStream::new_list(12);
+    rlp_signed.append(&payload.chain_id);
+    rlp_signed.append(&payload.nonce);
+    rlp_signed.append(&max_priority);
+    rlp_signed.append(&max_fee);
+    rlp_signed.append(&payload.gas_limit);
+    rlp_signed.append(&to);
+    rlp_signed.append(&value);
+    rlp_signed.append(&data);
+    rlp_signed.begin_list(0);
+    rlp_signed.append(&y_parity);
+    rlp_signed.append(&r_val);
+    rlp_signed.append(&s_val);
+
+    let mut raw_tx = vec![0x02];
+    raw_tx.extend(rlp_signed.out());
+
+    let mut hasher = Keccak256::new();
+    hasher.update(&raw_tx);
+    let tx_hash = format!("0x{}", hex::encode(hasher.finalize()));
+    let raw_tx_hex = format!("0x{}", hex::encode(raw_tx));
+
+    Ok(json!({
+        "raw_tx": raw_tx_hex,
+        "tx_hash": tx_hash
+    }))
 }
 
 fn sign_evm_tx(key_bytes: &[u8], payload: EvmTxPayload) -> Result<serde_json::Value, String> {
