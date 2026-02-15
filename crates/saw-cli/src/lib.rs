@@ -1,3 +1,4 @@
+mod keygen_local;
 mod keygen_threshold;
 
 use std::collections::BTreeMap;
@@ -431,7 +432,8 @@ Usage: saw <command> [options]
 Commands:
   install             Create the SAW directory layout
   gen-key             Generate a new wallet key pair (single-key)
-  keygen-threshold    Run threshold keygen ceremony (2-of-3)
+  keygen-local        Generate 2-of-3 threshold key shares locally
+  keygen-threshold    Run threshold keygen ceremony (distributed)
   address             Show the address for an existing wallet
   list                List all wallets and their addresses
   policy              Policy management subcommands
@@ -519,6 +521,7 @@ Threshold keygen:
         match cmd.as_str() {
             "--help" | "-h" => Ok(HELP.to_string()),
             "gen-key" => gen_key_cmd(iter),
+            "keygen-local" => keygen_local_cmd(iter),
             "keygen-threshold" => keygen_threshold_cmd(iter),
             "address" => address_cmd(iter),
             "list" => list_cmd(iter),
@@ -622,6 +625,61 @@ Options:
             rt.block_on(keygen_threshold::run_party(pid, &w, &url, &root))
                 .map_err(|e| CliError::InvalidArg(e))
         }
+    }
+
+    fn keygen_local_cmd<I, S>(mut iter: I) -> Result<String, CliError>
+    where
+        I: Iterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut wallet: Option<String> = None;
+        let mut root = crate::default_root();
+
+        while let Some(arg) = iter.next() {
+            match arg.as_ref() {
+                "--help" | "-h" => {
+                    return Ok("\
+Usage: saw keygen-local --wallet <name> [--root <path>]
+
+Generate all 3 key shares for a 2-of-3 threshold wallet locally.
+Set SAW_PASSPHRASE env var to encrypt the key shares.
+
+Output files (in <root>/keys/threshold/):
+  <wallet>_party0.json  → saw-daemon (agent machine)
+  <wallet>_party1.json  → saw-policy (policy server)
+  <wallet>_party2.json  → cosigner (recovery / cold storage)
+  <wallet>.meta.json    → shared metadata (address, public key)
+".to_string());
+                }
+                "--wallet" => {
+                    wallet = Some(
+                        iter.next()
+                            .ok_or(CliError::MissingArg("--wallet"))?
+                            .as_ref()
+                            .to_string(),
+                    );
+                }
+                "--root" => {
+                    root = PathBuf::from(
+                        iter.next()
+                            .ok_or(CliError::MissingArg("--root"))?
+                            .as_ref()
+                            .to_string(),
+                    );
+                }
+                other => return Err(CliError::InvalidArg(format!("flag: {other}"))),
+            }
+        }
+
+        let wallet = wallet.ok_or(CliError::MissingArg("--wallet"))?;
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| CliError::InvalidArg(format!("tokio runtime: {e}")))?;
+
+        rt.block_on(crate::keygen_local::run(&wallet, &root))
+            .map_err(|e| CliError::InvalidArg(e))
     }
 
     fn gen_key_cmd<I, S>(mut iter: I) -> Result<String, CliError>
