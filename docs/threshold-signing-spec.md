@@ -487,28 +487,62 @@ policy_agent:
 
 ## 7. Migration Path
 
-### Phase 1: Keygen + Signing (MVP)
+### Mode 1: Single-Key (SAW as-is)
+Default mode. No threshold signing. Works exactly like SAW today — single key on disk, policy enforced locally. For agents that don't need the extra security or are just getting started.
 
-- [ ] Select and integrate CGGMP Rust library
-- [ ] Implement keygen ceremony in saw-daemon
-- [ ] Build saw-policy binary (policy engine + MPC + WebSocket server)
-- [ ] Build saw-cosigner binary (CLI only)
-- [ ] Presignature pool
+```bash
+saw gen-key --chain evm --wallet main
+saw-daemon
+# That's it. Same as today.
+```
+
+### Mode 2: Self-Hosted Threshold (2-of-3)
+Agent developer runs saw-policy on a separate machine ($5 VPS, Pi, etc.). Security comes from physical separation — compromising one machine isn't enough.
+
+```bash
+# Machine A
+saw keygen --wallet main --threshold 2 --parties 3
+saw-daemon --wallet main
+
+# Machine B
+saw-policy --connect wss://machine-a:9443 --config policy.yaml
+
+# Your laptop (for keygen ceremony + recovery)
+saw-cosigner --join wss://machine-a:9443/keygen/abc123
+```
+
+### Mode 3: TEE-Hosted Policy (Future)
+saw-policy runs inside a Trusted Execution Environment (Phala Cloud / dstack). Operator cannot extract Share 2. Agent developer verifies via remote attestation. ~$50/mo.
+
+---
+
+### Phase 1: Foundation (Current)
+
+- [x] Select and integrate CGGMP Rust library (cggmp21 v0.6.3)
+- [x] Implement keygen ceremony (aux_info_gen + keygen)
+- [x] Integration test: full 2-of-3 keygen → signing → verification
+- [x] Scaffold saw-policy binary
+- [x] Scaffold saw-cosigner binary
+- [x] Presignature pool structure
+- [ ] WebSocket transport (replace in-memory with real networking)
+- [ ] Wire threshold path into saw-daemon alongside single-key mode
 - [ ] Share encryption at rest
+- [ ] CLI: `saw keygen --threshold` command
 
 ### Phase 2: Production Hardening
 
-- [ ] mTLS transport
-- [ ] Telegram escalation integration
-- [ ] Key refresh protocol
+- [ ] mTLS transport between daemon and policy
+- [ ] Policy engine: rate limits, spend tracking, price oracle
+- [ ] Telegram escalation for human cosigner
 - [ ] Circuit breakers and anomaly detection
 - [ ] Audit logging on both sides
 - [ ] Systemd units for saw-policy
+- [ ] Key refresh protocol (when cggmp21 adds threshold refresh)
 
 ### Phase 3: Ecosystem
 
-- [ ] Hosted policy agent (multi-tenant SaaS)
-- [ ] TEE support (AWS Nitro Enclaves)
+- [ ] TEE support via Phala Cloud / dstack
+- [ ] Hosted multi-tenant policy agent (x402 per-cosign)
 - [ ] FROST for Ed25519/Solana wallets
 - [ ] SDK support for agent-to-agent cosigning
 - [ ] Dashboard for monitoring signing activity
