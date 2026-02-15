@@ -9,6 +9,7 @@ bs58 = "0.5"
 cggmp21 = { version = "0.6", features = ["hd-wallet", "curve-secp256k1"] }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 ethereum-types = "0.14"
+generic-ec = "0.4"
 futures = "0.3"
 hex = "0.4"
 k256 = { version = "0.13", features = ["ecdsa"] }

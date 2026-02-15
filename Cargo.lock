@@ -1614,6 +1614,7 @@ dependencies = [
  "ed25519-dalek",
  "ethereum-types",
  "futures",
+ "generic-ec",
  "hex",
  "k256",
  "rand_core",

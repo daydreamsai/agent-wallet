@@ -33,6 +33,11 @@ impl ThresholdClient {
         }
     }
 
+    /// Get the shared public key from the key share.
+    pub fn public_key(&self) -> generic_ec::Point<cggmp21::supported_curves::Secp256k1> {
+        *self.key_share.shared_public_key
+    }
+
     /// Sign a message hash via threshold MPC with the policy agent.
     ///
     /// 1. Connect to policy agent

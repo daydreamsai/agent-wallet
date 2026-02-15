@@ -277,6 +277,31 @@ impl Server {
     }
 
     fn handle_get_address(&self, request: Request) -> Response {
+        // Threshold wallets: derive address from key share's public key
+        if let Some(client) = self.threshold_clients.get(&request.wallet) {
+            let pk = client.public_key();
+            let encoded = pk.to_bytes(false);
+            let pub_bytes = encoded.as_ref();
+            let mut hasher = Keccak256::new();
+            hasher.update(&pub_bytes[1..]);
+            let hash = hasher.finalize();
+            let address = format!("0x{}", hex::encode(&hash[12..]));
+            let public_key = format!("0x{}", hex::encode(pub_bytes));
+
+            return Response {
+                request_id: request.request_id,
+                status: "approved".to_string(),
+                result: Some(json!({
+                    "address": address,
+                    "public_key": public_key,
+                    "chain": "evm",
+                    "mode": "threshold"
+                })),
+                error: None,
+            };
+        }
+
+        // Single-key wallets: existing path
         match get_address(&self.root, &request.wallet) {
             Ok(payload) => Response {
                 request_id: request.request_id,
@@ -501,27 +526,28 @@ impl Server {
                 let r_val = U256::from_big_endian(r_bytes.as_ref());
                 let s_val = U256::from_big_endian(s_bytes.as_ref());
 
-                // Try both parities to find the correct v
+                // Recover y_parity by comparing against known public key
                 let secp = Secp256k1::new();
                 let msg =
                     Message::from_digest_slice(&sighash).expect("valid 32-byte hash");
 
+                // Get expected public key from key share
+                let expected_pk = client.public_key();
+                let expected_bytes = expected_pk.to_bytes(false);
+
                 let mut y_parity = 0u8;
                 for v in 0..2u8 {
-                    let mut sig_bytes = [0u8; 64];
-                    sig_bytes[..32].copy_from_slice(r_bytes.as_ref());
-                    sig_bytes[32..].copy_from_slice(s_bytes.as_ref());
-                    let rec_id = secp256k1::ecdsa::RecoveryId::from_i32(v as i32);
-                    if let Ok(rec_id) = rec_id {
-                        if let Ok(rec_sig) =
-                            RecoverableSignature::from_compact(&sig_bytes, rec_id)
-                        {
-                            if let Ok(_pubkey) = secp.recover_ecdsa(&msg, &rec_sig) {
-                                // Check if this matches our expected public key
-                                // For now, we accept the first valid recovery
-                                // (the threshold client knows the public key)
-                                y_parity = v;
-                                break;
+                    let mut compact = [0u8; 64];
+                    compact[..32].copy_from_slice(r_bytes.as_ref());
+                    compact[32..].copy_from_slice(s_bytes.as_ref());
+                    if let Ok(rec_id) = secp256k1::ecdsa::RecoveryId::from_i32(v as i32) {
+                        if let Ok(rec_sig) = RecoverableSignature::from_compact(&compact, rec_id) {
+                            if let Ok(recovered) = secp.recover_ecdsa(&msg, &rec_sig) {
+                                let rec_bytes = recovered.serialize_uncompressed();
+                                if &rec_bytes[1..] == &expected_bytes.as_ref()[1..] {
+                                    y_parity = v;
+                                    break;
+                                }
                             }
                         }
                     }
@@ -637,6 +663,16 @@ impl Server {
             }
         };
 
+        // ----- Threshold signing path -----
+        if self.is_threshold(&request.wallet) {
+            return self.handle_sign_eip2612_permit_threshold(
+                request.request_id,
+                request.wallet,
+                payload,
+            );
+        }
+
+        // ----- Single-key signing path (original) -----
         let policy = match self.load_wallet_policy(&request.wallet) {
             Ok(policy) => policy,
             Err(err) => {
@@ -723,6 +759,142 @@ impl Server {
                 status: "denied".to_string(),
                 result: None,
                 error: Some(err),
+            },
+        }
+    }
+
+    /// Threshold signing path for EIP-2612 permits.
+    fn handle_sign_eip2612_permit_threshold(
+        &self,
+        request_id: String,
+        wallet: String,
+        payload: Eip2612PermitPayload,
+    ) -> Response {
+        let client = match self.threshold_clients.get(&wallet) {
+            Some(c) => c,
+            None => {
+                return Response {
+                    request_id,
+                    status: "denied".to_string(),
+                    result: None,
+                    error: Some("threshold client not initialized".into()),
+                }
+            }
+        };
+
+        let rt = match &self.rt {
+            Some(rt) => rt,
+            None => {
+                return Response {
+                    request_id,
+                    status: "denied".to_string(),
+                    result: None,
+                    error: Some("no async runtime".into()),
+                }
+            }
+        };
+
+        // Derive owner address from key share's public key
+        let public_key_point = client.public_key();
+        let encoded = public_key_point.to_bytes(false);
+        let pub_bytes = encoded.as_ref();
+        let mut hasher = Keccak256::new();
+        hasher.update(&pub_bytes[1..]);
+        let hash = hasher.finalize();
+        let mut owner = [0u8; 20];
+        owner.copy_from_slice(&hash[12..]);
+
+        // Verify owner matches if provided in payload
+        if let Some(payload_owner) = payload.owner.as_deref() {
+            if let Ok(expected) = parse_hex_address_fixed(payload_owner) {
+                if expected != owner {
+                    return Response {
+                        request_id,
+                        status: "denied".to_string(),
+                        result: None,
+                        error: Some("owner mismatch with threshold key".into()),
+                    };
+                }
+            }
+        }
+
+        // Compute permit digest
+        let digest = match compute_permit_digest(&owner, &payload) {
+            Ok(d) => d,
+            Err(err) => {
+                return Response {
+                    request_id,
+                    status: "denied".to_string(),
+                    result: None,
+                    error: Some(err),
+                }
+            }
+        };
+
+        // Build tx details for policy evaluation
+        let tx_details = saw_mpc::protocol::TxDetails {
+            chain_id: Some(payload.chain_id),
+            to: Some(payload.token.clone()),
+            value: Some(payload.value.clone()),
+            data_len: 0,
+            is_contract_call: false,
+        };
+
+        // Run threshold signing
+        let result = rt.block_on(client.sign(
+            &wallet,
+            saw_mpc::protocol::SignAction::Eip2612Permit,
+            tx_details,
+            &digest,
+        ));
+
+        match result {
+            Ok(sign_result) => {
+                let sig = &sign_result.signature;
+                let r_bytes = sig.r.to_be_bytes();
+                let s_bytes = sig.s.to_be_bytes();
+
+                // Recover v: try both parities
+                let secp = Secp256k1::new();
+                let msg = Message::from_digest_slice(&digest).expect("valid digest");
+
+                let mut v = 27u8;
+                for parity in 0..2u8 {
+                    let mut compact = [0u8; 64];
+                    compact[..32].copy_from_slice(r_bytes.as_ref());
+                    compact[32..].copy_from_slice(s_bytes.as_ref());
+                    if let Ok(rec_id) = secp256k1::ecdsa::RecoveryId::from_i32(parity as i32) {
+                        if let Ok(rec_sig) = RecoverableSignature::from_compact(&compact, rec_id) {
+                            if let Ok(recovered) = secp.recover_ecdsa(&msg, &rec_sig) {
+                                // Compare against our known public key
+                                let rec_bytes = recovered.serialize_uncompressed();
+                                if &rec_bytes[1..] == &pub_bytes[1..] {
+                                    v = parity + 27;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let mut sig_out = [0u8; 65];
+                sig_out[..32].copy_from_slice(r_bytes.as_ref());
+                sig_out[32..64].copy_from_slice(s_bytes.as_ref());
+                sig_out[64] = v;
+                let signature = format!("0x{}", hex::encode(sig_out));
+
+                Response {
+                    request_id,
+                    status: "approved".to_string(),
+                    result: Some(json!({ "signature": signature })),
+                    error: None,
+                }
+            }
+            Err(err) => Response {
+                request_id,
+                status: "denied".to_string(),
+                result: None,
+                error: Some(format!("{err}")),
             },
         }
     }
@@ -1216,6 +1388,28 @@ fn sign_sol_tx(key_bytes: &[u8], message_base64: &str) -> Result<serde_json::Val
         "signature": sig_b58,
         "signed_tx_base64": signed_b64
     }))
+}
+
+/// Compute the EIP-712 digest for an EIP-2612 permit (without signing).
+/// Returns (digest, owner_address) where owner is derived from the key.
+fn compute_permit_digest(
+    owner: &[u8; 20],
+    payload: &Eip2612PermitPayload,
+) -> Result<[u8; 32], String> {
+    let token = parse_hex_address_fixed(&payload.token)?;
+    let spender = parse_hex_address_fixed(&payload.spender)?;
+    let value = parse_u256(&payload.value).map_err(|_| "invalid value".to_string())?;
+    let nonce = parse_u256(&payload.nonce).map_err(|_| "invalid nonce".to_string())?;
+    let deadline = parse_u256(&payload.deadline).map_err(|_| "invalid deadline".to_string())?;
+
+    let domain_separator = eip712_domain_separator(
+        &payload.name,
+        &payload.version,
+        payload.chain_id,
+        &token,
+    );
+    let struct_hash = eip2612_permit_hash(owner, &spender, value, nonce, deadline);
+    Ok(eip712_digest(domain_separator, struct_hash))
 }
 
 fn sign_eip2612_permit(
