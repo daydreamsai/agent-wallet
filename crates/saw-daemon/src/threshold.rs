@@ -178,40 +178,19 @@ impl ThresholdClient {
         *self.key_share.shared_public_key
     }
 
-    /// Start the background presignature refill loop.
-    /// Runs until the task is dropped/aborted.
-    pub fn start_presign_refill(&self) -> tokio::task::JoinHandle<()> {
-        let pool = self.pool.clone();
-        let key_share = self.key_share.clone();
-        let policy_url = self.policy_url.clone();
+    /// Get a clone of the pool Arc (for external refill loop).
+    pub fn pool(&self) -> Arc<Mutex<PresignaturePool>> {
+        self.pool.clone()
+    }
 
-        tokio::spawn(async move {
-            loop {
-                let count = {
-                    let p = pool.lock().await;
-                    if p.needs_refill() { p.refill_count() } else { 0 }
-                };
+    /// Get a clone of the key share.
+    pub fn key_share_clone(&self) -> KeyShare<Secp256k1> {
+        self.key_share.clone()
+    }
 
-                if count > 0 {
-                    eprintln!("presignature pool low, generating {count}");
-                    for _ in 0..count {
-                        match generate_one_presignature(&pool, &key_share, &policy_url).await {
-                            Ok(idx) => {
-                                let avail = pool.lock().await.available();
-                                eprintln!("presignature ready: index={idx} available={avail}");
-                            }
-                            Err(e) => {
-                                eprintln!("presignature generation failed: {e}, will retry");
-                                tokio::time::sleep(Duration::from_secs(5)).await;
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                tokio::time::sleep(Duration::from_secs(10)).await;
-            }
-        })
+    /// Get the policy URL.
+    pub fn policy_url(&self) -> &str {
+        &self.policy_url
     }
 
     /// Sign a message hash via threshold signing.
@@ -502,6 +481,39 @@ impl ThresholdClient {
             signature: result,
             matched_rule: decision.matched_rule,
         })
+    }
+}
+
+/// Background presignature refill loop. Call from within a tokio runtime.
+pub async fn presign_refill_loop(
+    pool: Arc<Mutex<PresignaturePool>>,
+    key_share: KeyShare<Secp256k1>,
+    policy_url: String,
+) {
+    loop {
+        let count = {
+            let p = pool.lock().await;
+            if p.needs_refill() { p.refill_count() } else { 0 }
+        };
+
+        if count > 0 {
+            eprintln!("presignature pool low, generating {count}");
+            for _ in 0..count {
+                match generate_one_presignature(&pool, &key_share, &policy_url).await {
+                    Ok(idx) => {
+                        let avail = pool.lock().await.available();
+                        eprintln!("presignature ready: index={idx} available={avail}");
+                    }
+                    Err(e) => {
+                        eprintln!("presignature generation failed: {e}, will retry");
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        break;
+                    }
+                }
+            }
+        }
+
+        tokio::time::sleep(Duration::from_secs(10)).await;
     }
 }
 

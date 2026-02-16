@@ -205,16 +205,17 @@ impl Server {
             None
         };
 
-        // Start background presignature refill for each threshold wallet
+        // Start background presignature refill for each threshold wallet.
+        // Must be spawned inside the tokio runtime context.
         if let Some(rt) = &rt {
             for (wallet, client) in &threshold_clients {
-                let _handle = rt.spawn({
-                    let wallet = wallet.clone();
-                    let handle = client.start_presign_refill();
-                    async move {
-                        eprintln!("presign refill started for wallet {wallet}");
-                        handle.await.ok();
-                    }
+                let pool = client.pool();
+                let key_share = client.key_share_clone();
+                let policy_url = client.policy_url().to_string();
+                let wallet = wallet.clone();
+                rt.spawn(async move {
+                    eprintln!("presign refill started for wallet {wallet}");
+                    crate::threshold::presign_refill_loop(pool, key_share, policy_url).await;
                 });
             }
         }
