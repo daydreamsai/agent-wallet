@@ -551,31 +551,9 @@ impl Server {
                 let s_val = U256::from_big_endian(s_bytes.as_ref());
 
                 // Recover y_parity by comparing against known public key
-                let secp = Secp256k1::new();
-                let msg =
-                    Message::from_digest_slice(&sighash).expect("valid 32-byte hash");
-
-                // Get expected public key from key share
                 let expected_pk = client.public_key();
                 let expected_bytes = expected_pk.to_bytes(false);
-
-                let mut y_parity = 0u8;
-                for v in 0..2u8 {
-                    let mut compact = [0u8; 64];
-                    compact[..32].copy_from_slice(r_bytes.as_ref());
-                    compact[32..].copy_from_slice(s_bytes.as_ref());
-                    if let Ok(rec_id) = secp256k1::ecdsa::RecoveryId::from_i32(v as i32) {
-                        if let Ok(rec_sig) = RecoverableSignature::from_compact(&compact, rec_id) {
-                            if let Ok(recovered) = secp.recover_ecdsa(&msg, &rec_sig) {
-                                let rec_bytes = recovered.serialize_uncompressed();
-                                if &rec_bytes[1..] == &expected_bytes.as_ref()[1..] {
-                                    y_parity = v;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
+                let y_parity = recover_y_parity(r_bytes.as_ref(), s_bytes.as_ref(), &sighash, expected_bytes.as_ref());
 
                 match build_signed_evm_tx(&payload, &to_bytes, &data_bytes, y_parity, r_val, s_val) {
                     Ok(result) => Response {
@@ -879,27 +857,7 @@ impl Server {
                 let s_bytes = sig.s.to_be_bytes();
 
                 // Recover v: try both parities
-                let secp = Secp256k1::new();
-                let msg = Message::from_digest_slice(&digest).expect("valid digest");
-
-                let mut v = 27u8;
-                for parity in 0..2u8 {
-                    let mut compact = [0u8; 64];
-                    compact[..32].copy_from_slice(r_bytes.as_ref());
-                    compact[32..].copy_from_slice(s_bytes.as_ref());
-                    if let Ok(rec_id) = secp256k1::ecdsa::RecoveryId::from_i32(parity as i32) {
-                        if let Ok(rec_sig) = RecoverableSignature::from_compact(&compact, rec_id) {
-                            if let Ok(recovered) = secp.recover_ecdsa(&msg, &rec_sig) {
-                                // Compare against our known public key
-                                let rec_bytes = recovered.serialize_uncompressed();
-                                if &rec_bytes[1..] == &pub_bytes[1..] {
-                                    v = parity + 27;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
+                let v = recover_y_parity(r_bytes.as_ref(), s_bytes.as_ref(), &digest, &pub_bytes) + 27;
 
                 let mut sig_out = [0u8; 65];
                 sig_out[..32].copy_from_slice(r_bytes.as_ref());
@@ -1318,6 +1276,31 @@ fn build_signed_evm_tx(
         "raw_tx": raw_tx_hex,
         "tx_hash": tx_hash
     }))
+}
+
+fn recover_y_parity(
+    r_bytes: &[u8],
+    s_bytes: &[u8],
+    msg_hash: &[u8; 32],
+    expected_pk: &[u8],
+) -> u8 {
+    let secp = Secp256k1::new();
+    let msg = Message::from_digest_slice(msg_hash).expect("valid hash");
+    let mut sig_bytes = [0u8; 64];
+    sig_bytes[..32].copy_from_slice(r_bytes);
+    sig_bytes[32..].copy_from_slice(s_bytes);
+    for v_candidate in 0u8..2 {
+        if let Ok(rid) = secp256k1::ecdsa::RecoveryId::from_i32(v_candidate as i32) {
+            if let Ok(rec_sig) = RecoverableSignature::from_compact(&sig_bytes, rid) {
+                if let Ok(recovered) = secp.recover_ecdsa(&msg, &rec_sig) {
+                    if recovered.serialize_uncompressed()[1..] == expected_pk[1..] {
+                        return v_candidate;
+                    }
+                }
+            }
+        }
+    }
+    0 // fallback
 }
 
 fn sign_evm_tx(key_bytes: &[u8], payload: EvmTxPayload) -> Result<serde_json::Value, String> {

@@ -13,21 +13,6 @@ const T: u16 = 2;
 async fn keygen_ceremony_via_relay() {
     let _ = tracing_subscriber::fmt::try_init();
 
-    // Start relay
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let relay_url = format!("ws://{addr}");
-
-    // We need the relay to accept connections for TWO phases (aux + keygen).
-    // The current relay accepts N parties then finishes.
-    // For multi-phase, we run the relay once per phase.
-    // Actually, let's test the connect_to_relay function directly
-    // with our existing in-memory approach for keygen, and just
-    // verify the relay routing works for a single phase.
-
-    // --- Test relay with a simple signing phase ---
-    // First, do keygen in-memory (proven), then test relay routing for signing.
-
     // Generate primes
     let primes: Vec<_> = (0..N).map(|_| keygen::pregenerate_primes()).collect();
 

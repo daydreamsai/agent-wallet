@@ -55,6 +55,10 @@ pub fn load_config(root: &Path) -> DaemonConfig {
                 DaemonConfig::default()
             })
         }
-        Err(_) => DaemonConfig::default(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DaemonConfig::default(),
+        Err(e) => {
+            eprintln!("warning: could not read config.yaml: {e}, using defaults");
+            DaemonConfig::default()
+        }
     }
 }

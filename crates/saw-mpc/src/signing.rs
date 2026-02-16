@@ -180,4 +180,3 @@ where
     Ok(sig)
 }
 
-use sha2::Digest as _;

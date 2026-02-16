@@ -328,14 +328,21 @@ async fn handle_connection(
                 }
 
                 // Parse message hash
-                let hash_bytes = hex::decode(
-                    sign_req.message_hash.trim_start_matches("0x"),
-                )
-                .map_err(|_| MpcError::Signing("bad hash hex".into()))?;
-                if hash_bytes.len() != 32 {
-                    tracing::error!("hash not 32 bytes");
-                    continue;
-                }
+                let hash_hex = sign_req.message_hash.trim_start_matches("0x");
+                let hash_bytes = match hex::decode(hash_hex) {
+                    Ok(b) if b.len() == 32 => b,
+                    _ => {
+                        tracing::error!("invalid message hash");
+                        let resp = WireMessage::PolicyDecision(saw_mpc::protocol::PolicyDecision {
+                            request_id: sign_req.request_id.clone(),
+                            decision: Decision::Deny,
+                            matched_rule: None,
+                            reason: Some("invalid message hash".into()),
+                        });
+                        let _ = send_wire(&ws_tx, &resp).await;
+                        continue;
+                    }
+                };
                 let mut hash = [0u8; 32];
                 hash.copy_from_slice(&hash_bytes);
 

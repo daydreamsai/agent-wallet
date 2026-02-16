@@ -158,7 +158,6 @@ pub async fn run_relay(
 
         // Spawn reader task: WebSocket → route to other parties
         let senders_clone = senders.clone();
-        let _n = expected_parties;
         let read_handle = tokio::spawn(async move {
             while let Some(item) = ws_rx.next().await {
                 let raw = match item {

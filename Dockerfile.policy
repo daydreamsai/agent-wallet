@@ -2,7 +2,7 @@
 # Stage 1: Build
 FROM rust:1.83 AS builder
 
-RUN apt-get update && apt-get install -y m4 pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends m4 pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
@@ -14,7 +14,7 @@ RUN cargo build --release -p saw-policy
 # Stage 2: Minimal runtime
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/target/release/saw-policy /usr/local/bin/saw-policy
 

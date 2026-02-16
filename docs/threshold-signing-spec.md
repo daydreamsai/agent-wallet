@@ -67,7 +67,7 @@ Two modes:
 ### Local keygen (current)
 Generate all 3 shares in one process, then distribute:
 ```bash
-SAW_PASSPHRASE="secret" saw keygen-local --wallet mywallt --root ~/.saw
+SAW_PASSPHRASE="secret" saw keygen-local --wallet mywallet --root ~/.saw
 ```
 Outputs 3 encrypted share files + metadata with the derived address.
 

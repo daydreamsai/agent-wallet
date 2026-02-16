@@ -12,7 +12,7 @@
 //!   --share / KEY_SHARE_PATH Key share file (default: <root>/key_share.json)
 //!   SAW_PASSPHRASE           Passphrase to decrypt key share
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 mod policy;
 mod server;
@@ -122,7 +122,7 @@ async fn run(args: Vec<String>) -> Result<(), String> {
         .map_err(|e| format!("server error: {e}"))
 }
 
-fn load_policy(path: &PathBuf) -> Result<policy::PolicyConfig, String> {
+fn load_policy(path: &Path) -> Result<policy::PolicyConfig, String> {
     // Try POLICY_YAML env var first (inline config for containerized deployments)
     let contents = if let Ok(yaml) = std::env::var("POLICY_YAML") {
         tracing::info!("loading policy from POLICY_YAML env var");
@@ -134,7 +134,7 @@ fn load_policy(path: &PathBuf) -> Result<policy::PolicyConfig, String> {
     serde_yaml::from_str(&contents).map_err(|e| format!("parse policy: {e}"))
 }
 
-fn load_key_share(path: &PathBuf) -> Result<saw_mpc::KeyShare<saw_mpc::Secp256k1>, String> {
+fn load_key_share(path: &Path) -> Result<saw_mpc::KeyShare<saw_mpc::Secp256k1>, String> {
     // Try KEY_SHARE_BASE64 env var first (for containerized deployments)
     let data = if let Ok(b64) = std::env::var("KEY_SHARE_BASE64") {
         use base64::Engine;
