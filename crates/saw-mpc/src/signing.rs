@@ -132,7 +132,9 @@ pub fn issue_partial_signature(
     presig: cggmp21::Presignature<Secp256k1>,
     message_hash: &[u8; 32],
 ) -> PartialSignature<Secp256k1> {
-    let data = DataToSign::from_digest(sha2::Sha256::new_with_prefix(message_hash));
+    // Use raw message hash as scalar — EVM sighash is already Keccak256'd,
+    // we must NOT hash it again or the recovered address will be wrong.
+    let data = DataToSign::from_scalar(generic_ec::Scalar::from_be_bytes_mod_order(message_hash));
     presig.issue_partial_signature(data)
 }
 
@@ -164,7 +166,9 @@ where
         "starting full signing"
     );
 
-    let data = DataToSign::from_digest(sha2::Sha256::new_with_prefix(message_hash));
+    // Use raw message hash as scalar — EVM sighash is already Keccak256'd,
+    // we must NOT hash it again or the recovered address will be wrong.
+    let data = DataToSign::from_scalar(generic_ec::Scalar::from_be_bytes_mod_order(message_hash));
     let party = cggmp21::round_based::MpcParty::connected(delivery);
 
     let sig = cggmp21::signing(eid, party_index_in_signing, parties_indexes_at_keygen, key_share)
