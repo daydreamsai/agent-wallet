@@ -558,13 +558,7 @@ impl Server {
                 let expected_pk = client.public_key();
                 let expected_bytes = expected_pk.to_bytes(false);
 
-                eprintln!("[DEBUG] expected pubkey ({} bytes): {}", expected_bytes.as_ref().len(), hex::encode(expected_bytes.as_ref()));
-                eprintln!("[DEBUG] r: {}", hex::encode(r_bytes.as_ref()));
-                eprintln!("[DEBUG] s: {}", hex::encode(s_bytes.as_ref()));
-                eprintln!("[DEBUG] sighash: {}", hex::encode(&sighash));
-
                 let mut y_parity = 0u8;
-                let mut matched = false;
                 for v in 0..2u8 {
                     let mut compact = [0u8; 64];
                     compact[..32].copy_from_slice(r_bytes.as_ref());
@@ -573,18 +567,13 @@ impl Server {
                         if let Ok(rec_sig) = RecoverableSignature::from_compact(&compact, rec_id) {
                             if let Ok(recovered) = secp.recover_ecdsa(&msg, &rec_sig) {
                                 let rec_bytes = recovered.serialize_uncompressed();
-                                eprintln!("[DEBUG] v={} recovered: {}", v, hex::encode(&rec_bytes));
                                 if &rec_bytes[1..] == &expected_bytes.as_ref()[1..] {
                                     y_parity = v;
-                                    matched = true;
                                     break;
                                 }
                             }
                         }
                     }
-                }
-                if !matched {
-                    eprintln!("[DEBUG] WARNING: neither v=0 nor v=1 matched expected pubkey!");
                 }
 
                 match build_signed_evm_tx(&payload, &to_bytes, &data_bytes, y_parity, r_val, s_val) {
