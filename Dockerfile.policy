@@ -29,6 +29,9 @@ ENV SAW_ROOT=/data
 ENV POLICY_PATH=/data/policy.yaml
 ENV KEY_SHARE_PATH=/data/key_share.json
 
+RUN useradd -r -s /bin/false saw
+USER saw
+
 EXPOSE 9443
 
 CMD ["saw-policy"]

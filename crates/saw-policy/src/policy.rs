@@ -185,12 +185,22 @@ fn matches_rule(
         }
     }
 
-    // TODO: Check max_value_usd (requires price oracle integration)
-    // TODO: Check max_daily_spend_usd (requires spend tracking)
-    // TODO: Check max_per_minute (requires rate tracking)
+    // Deny if unimplemented spend-limit conditions are set, rather than
+    // silently matching all transactions.
+    if rule.conditions.max_value_usd.is_some() {
+        tracing::warn!("max_value_usd condition is not yet implemented — denying to be safe");
+        return false;
+    }
+    if rule.conditions.max_daily_spend_usd.is_some() {
+        tracing::warn!("max_daily_spend_usd condition is not yet implemented — denying to be safe");
+        return false;
+    }
+    if rule.conditions.max_per_minute.is_some() {
+        tracing::warn!("max_per_minute condition is not yet implemented — denying to be safe");
+        return false;
+    }
 
     // If we got here, all specified conditions are met
-    // (conditions that require price oracle are not yet enforced)
     true
 }
 

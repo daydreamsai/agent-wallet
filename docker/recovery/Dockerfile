@@ -26,5 +26,8 @@ COPY --from=builder /build/target/release/saw-policy /usr/local/bin/saw-policy
 RUN mkdir -p /data
 WORKDIR /data
 
+RUN useradd -r -s /bin/false saw
+USER saw
+
 EXPOSE 8080
 CMD ["saw-policy"]

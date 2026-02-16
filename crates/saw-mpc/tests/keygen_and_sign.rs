@@ -101,8 +101,8 @@ async fn keygen_2of3_and_sign() {
     println!("Signature: r={:?}, s={:?}", signatures[0].r, signatures[0].s);
 
     // Verify the signature against the public key
-    let data = cggmp21::DataToSign::from_digest(
-        sha2::Sha256::new_with_prefix(&message_hash),
+    let data = cggmp21::DataToSign::from_scalar(
+        generic_ec::Scalar::from_be_bytes_mod_order(&message_hash),
     );
     signatures[0]
         .verify(&key_shares[0].shared_public_key, &data)
@@ -110,5 +110,3 @@ async fn keygen_2of3_and_sign() {
 
     println!("✓ Signature verified successfully!");
 }
-
-use sha2::Digest;

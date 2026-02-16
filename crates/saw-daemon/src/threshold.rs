@@ -489,6 +489,7 @@ pub async fn presign_refill_loop(
     pool: Arc<Mutex<PresignaturePool>>,
     key_share: KeyShare<Secp256k1>,
     policy_url: String,
+    wallet: String,
 ) {
     loop {
         let count = {
@@ -499,7 +500,7 @@ pub async fn presign_refill_loop(
         if count > 0 {
             eprintln!("presignature pool low, generating {count}");
             for _ in 0..count {
-                match generate_one_presignature(&pool, &key_share, &policy_url).await {
+                match generate_one_presignature(&pool, &key_share, &policy_url, &wallet).await {
                     Ok(idx) => {
                         let avail = pool.lock().await.available();
                         eprintln!("presignature ready: index={idx} available={avail}");
@@ -523,6 +524,7 @@ async fn generate_one_presignature(
     pool: &Arc<Mutex<PresignaturePool>>,
     key_share: &KeyShare<Secp256k1>,
     policy_url: &str,
+    wallet: &str,
 ) -> Result<u64, ThresholdError> {
     let presig_index = {
         let mut p = pool.lock().await;
@@ -541,7 +543,7 @@ async fn generate_one_presignature(
     let req = WireMessage::PresignRequest(PresignRequest {
         session_id: session_id.clone(),
         presig_index,
-        wallet: String::new(),
+        wallet: wallet.to_string(),
     });
     send_ws(&ws_tx, &req).await?;
 

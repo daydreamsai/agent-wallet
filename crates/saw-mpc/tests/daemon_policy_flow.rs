@@ -30,8 +30,6 @@ use saw_mpc::transport::DeliveryError;
 use saw_mpc::types::{PARTY_DAEMON, PARTY_POLICY};
 use saw_mpc::{KeyShare, Secp256k1};
 
-use sha2::Digest;
-
 type SignMsg = cggmp21::signing::msg::Msg<Secp256k1, sha2::Sha256>;
 
 #[tokio::test]
@@ -289,7 +287,9 @@ async fn full_daemon_policy_flow() {
     assert_eq!(sig_policy, sig_daemon);
 
     // Verify
-    let data = cggmp21::DataToSign::from_digest(sha2::Sha256::new_with_prefix(&message_hash));
+    let data = cggmp21::DataToSign::from_scalar(
+        generic_ec::Scalar::from_be_bytes_mod_order(&message_hash),
+    );
     sig_daemon
         .verify(&complete_shares[0].shared_public_key, &data)
         .expect("verification failed");

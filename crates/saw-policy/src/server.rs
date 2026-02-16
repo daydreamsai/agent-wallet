@@ -468,10 +468,23 @@ async fn handle_connection(
                     .map_err(|e| MpcError::Signing(format!("task panic: {e}")))?;
                 out_task.abort();
 
-                match result {
-                    Ok(_) => tracing::info!(request_id = %sign_req.request_id, "signing ok"),
-                    Err(ref e) => tracing::error!(request_id = %sign_req.request_id, error = %e, "signing failed"),
-                }
+                let (success, error) = match result {
+                    Ok(_) => {
+                        tracing::info!(request_id = %sign_req.request_id, "signing ok");
+                        (true, None)
+                    }
+                    Err(ref e) => {
+                        tracing::error!(request_id = %sign_req.request_id, error = %e, "signing failed");
+                        (false, Some(e.to_string()))
+                    }
+                };
+
+                let complete = WireMessage::SigningComplete(saw_mpc::protocol::SigningComplete {
+                    request_id: sign_req.request_id.clone(),
+                    success,
+                    error,
+                });
+                send_wire(&ws_tx, &complete).await?;
             }
             WireMessage::Ping => {
                 send_wire(&ws_tx, &WireMessage::Pong).await?;

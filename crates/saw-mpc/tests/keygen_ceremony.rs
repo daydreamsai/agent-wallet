@@ -6,8 +6,6 @@
 use saw_mpc::keygen;
 use saw_mpc::relay;
 
-use sha2::Digest;
-
 const N: u16 = 3;
 const T: u16 = 2;
 
@@ -81,10 +79,12 @@ async fn keygen_ceremony_via_relay() {
     let listener2 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr2 = listener2.local_addr().unwrap();
     let relay_url2 = format!("ws://{addr2}");
+    let addr2_str = addr2.to_string();
+    drop(listener2); // Release the port before run_relay binds it
 
     let relay_task = tokio::spawn(async move {
         // Manual relay: accept 2, route messages
-        relay::run_relay(&addr2.to_string(), 2).await
+        relay::run_relay(&addr2_str, 2).await
     });
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -118,7 +118,9 @@ async fn keygen_ceremony_via_relay() {
     assert_eq!(sig_0, sig_1);
 
     // Verify
-    let data = cggmp21::DataToSign::from_digest(sha2::Sha256::new_with_prefix(&message_hash));
+    let data = cggmp21::DataToSign::from_scalar(
+        generic_ec::Scalar::from_be_bytes_mod_order(&message_hash),
+    );
     sig_0
         .verify(&complete_shares[0].shared_public_key, &data)
         .expect("verification failed");

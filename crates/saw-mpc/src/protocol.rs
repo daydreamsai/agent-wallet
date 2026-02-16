@@ -96,6 +96,14 @@ pub struct PresignRequest {
     pub wallet: String,
 }
 
+/// Result of a full MPC signing session (policy → daemon).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SigningComplete {
+    pub request_id: String,
+    pub success: bool,
+    pub error: Option<String>,
+}
+
 /// Acknowledgement that a presignature was generated (policy → daemon).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PresignReady {
@@ -147,6 +155,8 @@ pub enum WireMessage {
     PartialSignRequest(PartialSignRequest),
     /// Policy's partial signature response (policy → daemon)
     PartialSignResponse(PartialSignResponse),
+    /// Signing completed (policy → daemon)
+    SigningComplete(SigningComplete),
     /// Heartbeat / keepalive
     Ping,
     Pong,

@@ -25,3 +25,4 @@ tracing = "0.1"
 
 [dev-dependencies]
 tracing-subscriber = "0.3"
+generic-ec = "0.4"

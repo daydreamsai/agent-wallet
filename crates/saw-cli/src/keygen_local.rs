@@ -23,6 +23,12 @@ const THRESHOLD: u16 = 2;
 pub async fn run(wallet: &str, root: &Path) -> Result<String, String> {
     let passphrase = std::env::var("SAW_PASSPHRASE").ok();
 
+    // Random nonce to avoid execution ID collisions when reusing wallet names
+    let nonce: u64 = {
+        use rand_core::{OsRng, RngCore};
+        OsRng.next_u64()
+    };
+
     eprintln!("=== SAW Local Keygen (2-of-3) ===");
     eprintln!("Wallet: {wallet}");
     eprintln!("Root:   {}\n", root.display());
@@ -45,7 +51,7 @@ pub async fn run(wallet: &str, root: &Path) -> Result<String, String> {
 
     let mut aux_handles = Vec::new();
     for (i, (delivery, prime)) in aux_deliveries.into_iter().zip(primes).enumerate() {
-        let eid_bytes: Vec<u8> = format!("local-{wallet}-aux").into_bytes();
+        let eid_bytes: Vec<u8> = format!("local-{wallet}-{nonce}-aux").into_bytes();
         aux_handles.push(tokio::spawn(async move {
             let eid = cggmp21::ExecutionId::new(&eid_bytes);
             keygen::generate_aux_info(eid, i as u16, NUM_PARTIES, prime, delivery).await
@@ -68,7 +74,7 @@ pub async fn run(wallet: &str, root: &Path) -> Result<String, String> {
 
     let mut keygen_handles = Vec::new();
     for (i, delivery) in keygen_deliveries.into_iter().enumerate() {
-        let eid_bytes: Vec<u8> = format!("local-{wallet}-dkg").into_bytes();
+        let eid_bytes: Vec<u8> = format!("local-{wallet}-{nonce}-dkg").into_bytes();
         keygen_handles.push(tokio::spawn(async move {
             let eid = cggmp21::ExecutionId::new(&eid_bytes);
             keygen::generate_key(eid, i as u16, NUM_PARTIES, THRESHOLD, delivery).await
@@ -106,7 +112,12 @@ pub async fn run(wallet: &str, root: &Path) -> Result<String, String> {
             address = output.address.clone();
             public_key = output.public_key.clone();
         } else {
-            assert_eq!(address, output.address, "address mismatch between parties");
+            if address != output.address {
+                return Err(format!(
+                    "address mismatch between parties: expected {address}, got {}",
+                    output.address
+                ));
+            }
         }
 
         // Save key share (encrypted if passphrase set)

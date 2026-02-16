@@ -158,10 +158,11 @@ impl Server {
                     }
                 };
 
+                let default_share_path = format!("keys/threshold/{wallet}_party0.json");
                 let share_path = wcfg
                     .key_share_path
                     .as_deref()
-                    .unwrap_or("keys/threshold/key_share.json");
+                    .unwrap_or(&default_share_path);
                 let full_path = root.join(share_path);
 
                 let key_share = match std::fs::read(&full_path) {
@@ -215,7 +216,7 @@ impl Server {
                 let wallet = wallet.clone();
                 rt.spawn(async move {
                     eprintln!("presign refill started for wallet {wallet}");
-                    crate::threshold::presign_refill_loop(pool, key_share, policy_url).await;
+                    crate::threshold::presign_refill_loop(pool, key_share, policy_url, wallet).await;
                 });
             }
         }

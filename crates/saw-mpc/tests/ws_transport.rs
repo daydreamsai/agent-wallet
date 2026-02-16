@@ -9,8 +9,6 @@ use saw_mpc::transport;
 use saw_mpc::protocol::SessionId;
 use saw_mpc::types::{PARTY_DAEMON, PARTY_POLICY};
 
-use sha2::Digest;
-
 #[tokio::test]
 async fn sign_over_websocket() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -128,8 +126,8 @@ async fn sign_over_websocket() {
     assert_eq!(sig_policy, sig_daemon, "both parties should produce same signature");
 
     // Verify
-    let data = cggmp21::DataToSign::from_digest(
-        sha2::Sha256::new_with_prefix(&message_hash),
+    let data = cggmp21::DataToSign::from_scalar(
+        generic_ec::Scalar::from_be_bytes_mod_order(&message_hash),
     );
     sig_daemon
         .verify(&complete_shares[0].shared_public_key, &data)
