@@ -1,12 +1,6 @@
-# SAW Recovery Co-signer
+# SAW Recovery Co-signer (Party 2)
 
-This Docker container holds **Party 2** (the recovery key share) for the SAW threshold wallet.
-
-## When to use
-
-If either the daemon (party 0) or the primary policy server (party 1) is permanently lost,
-you can use this recovery co-signer alongside the surviving party to sign transactions
-and migrate funds to a new wallet.
+Runs `saw-policy` with the recovery key share. Use when party 0 (daemon) or party 1 (primary policy) is lost and you need to sign with the surviving party.
 
 ## Quick start
 
@@ -14,33 +8,29 @@ and migrate funds to a new wallet.
 # Build from repo root
 docker build -f docker/recovery/Dockerfile -t saw-recovery .
 
-# Run
-docker run -d --name saw-recovery -p 8080:8080 \
+# Run (macOS)
+docker run -p 9443:9443 \
   -e SAW_PASSPHRASE="your-passphrase" \
-  -e KEY_SHARE_BASE64="<party2-share-base64>" \
-  -e POLICY_YAML="$(base64 -w0 policy.yaml)" \
+  -e KEY_SHARE_BASE64="$(base64 -i ~/saw-recovery/party2.json.enc)" \
+  saw-recovery
+
+# Run (Linux)
+docker run -p 9443:9443 \
+  -e SAW_PASSPHRASE="your-passphrase" \
+  -e KEY_SHARE_BASE64="$(base64 -w0 ~/saw-recovery/party2.json.enc)" \
   saw-recovery
 ```
-
-## Environment variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `SAW_PASSPHRASE` | Yes | Passphrase to decrypt the key share |
-| `KEY_SHARE_BASE64` | Yes | Base64-encoded encrypted party 2 key share |
-| `POLICY_YAML` | Yes | Base64-encoded policy.yaml |
-| `PORT` | No | Listen port (default: 8080) |
 
 ## Recovery procedure
 
 1. Start this container
-2. Point the surviving party's config at this container's WS endpoint
-3. Sign a transaction to transfer all funds to a new wallet
-4. Generate new threshold key shares for the new wallet
-5. Destroy this container and its key share
+2. Point the surviving party's config at `wss://your-machine:9443`
+3. Sign a transaction to transfer funds to a new wallet
+4. Generate new key shares for the new wallet
+5. Destroy this container
 
 ## Security
 
-- Keep the `KEY_SHARE_BASE64` and `SAW_PASSPHRASE` separate — don't store them in the same place
-- This container should only be run when recovery is needed, not 24/7
+- Store `party2.json.enc` and `SAW_PASSPHRASE` in separate locations
+- Only run this container during recovery — not 24/7
 - After recovery, rotate to fresh key shares
