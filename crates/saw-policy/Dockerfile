@@ -1,0 +1,34 @@
+# Multi-stage build for saw-policy
+# Stage 1: Build
+FROM rust:1.85 AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends m4 pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+
+# Build in release mode for fast Paillier/MPC ops
+RUN cargo build --release -p saw-policy
+
+# Stage 2: Minimal runtime
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/target/release/saw-policy /usr/local/bin/saw-policy
+
+# Create data directory
+RUN mkdir -p /data
+
+WORKDIR /data
+
+# Default env vars (override at deploy time)
+ENV RUST_LOG=saw_policy=info
+ENV SAW_ROOT=/data
+ENV POLICY_PATH=/data/policy.yaml
+ENV KEY_SHARE_PATH=/data/key_share.json
+
+EXPOSE 9443
+
+CMD ["saw-policy"]

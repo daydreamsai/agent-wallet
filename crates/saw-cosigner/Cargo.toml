@@ -1,0 +1,18 @@
+[package]
+name = "saw-cosigner"
+version = "0.1.0"
+edition = "2021"
+description = "Human cosigner for SAW threshold signing — holds Share 3, recovery + override"
+
+[dependencies]
+saw-mpc = { path = "../saw-mpc" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[[bin]]
+name = "saw-cosigner"
+path = "src/main.rs"

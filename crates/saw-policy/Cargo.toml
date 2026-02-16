@@ -1,23 +1,24 @@
 [package]
-name = "saw"
+name = "saw-policy"
 version = "0.1.0"
 edition = "2021"
+description = "Policy agent for SAW threshold signing — holds Share 2, evaluates rules, auto-cosigns"
 
 [dependencies]
-bs58 = "0.5"
-cggmp21 = { version = "0.6", features = ["hd-wallet", "curve-secp256k1"] }
-ed25519-dalek = { version = "2", features = ["rand_core"] }
-hex = "0.4"
-k256 = { version = "0.13", features = ["ecdsa"] }
-rand_core = { version = "0.6", features = ["getrandom"] }
 saw-mpc = { path = "../saw-mpc" }
+base64 = "0.22"
+cggmp21 = { version = "0.6", features = ["hd-wallet", "curve-secp256k1"] }
+futures = "0.3"
+hex = "0.4"
+sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
-sha3 = "0.10"
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [[bin]]
-name = "saw"
+name = "saw-policy"
 path = "src/main.rs"

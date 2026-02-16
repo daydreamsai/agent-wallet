@@ -1,3 +1,26 @@
 [workspace]
-members = ["crates/saw-cli", "crates/saw-daemon"]
+members = [
+    "crates/saw-cli",
+    "crates/saw-daemon",
+    "crates/saw-mpc",
+    "crates/saw-policy",
+    "crates/saw-cosigner",
+]
 resolver = "2"
+
+# Release-optimized test profile for MPC tests (Paillier prime generation
+# is ~100x slower in debug mode). Use: cargo test --release -p saw-mpc
+[profile.release]
+opt-level = 3
+
+# Optimize heavy crypto dependencies even in debug builds
+[profile.dev.package.rug]
+opt-level = 3
+[profile.dev.package.gmp-mpfr-sys]
+opt-level = 3
+[profile.dev.package.paillier-zk]
+opt-level = 3
+[profile.dev.package.cggmp21]
+opt-level = 3
+[profile.dev.package.generic-ec]
+opt-level = 3
