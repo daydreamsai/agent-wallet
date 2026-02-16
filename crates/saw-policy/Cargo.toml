@@ -6,6 +6,7 @@ description = "Policy agent for SAW threshold signing — holds Share 2, evaluat
 
 [dependencies]
 saw-mpc = { path = "../saw-mpc" }
+base64 = "0.22"
 cggmp21 = { version = "0.6", features = ["hd-wallet", "curve-secp256k1"] }
 futures = "0.3"
 hex = "0.4"
