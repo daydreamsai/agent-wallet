@@ -10,7 +10,7 @@
 #     -e POLICY_YAML="<base64-encoded-policy>" \
 #     saw-recovery
 
-FROM rust:1.83-bookworm AS builder
+FROM rust:1.85-bookworm AS builder
 
 WORKDIR /build
 COPY . .
