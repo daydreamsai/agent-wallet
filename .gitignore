@@ -1,2 +1,13 @@
 /target/
 .DS_Store
+
+# Key shares and secrets - NEVER commit these
+*.json.enc
+*.key
+*.pem
+*.p12
+.env
+.env.*
+
+# SAW data directories
+.saw/
